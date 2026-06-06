@@ -13,13 +13,42 @@ def _norm(text: str) -> str:
     return str(text or "").strip().lower().replace("_", " ")
 
 
+_NUMERIC_DTYPES = {"FLOAT", "DOUBLE", "DECIMAL", "INT", "INTEGER", "NUMBER", "XS:DOUBLE", "XS:FLOAT", "XS:DECIMAL", "XS:INT"}
+
+
+def _normalize_dtype(value: str) -> str:
+    raw = str(value or "").upper()
+    if raw in _NUMERIC_DTYPES:
+        return "FLOAT"
+    if raw in {"BOOL", "BOOLEAN"}:
+        return "BOOL"
+    if raw in {"STRING", "TEXT"}:
+        return "STRING"
+    return raw
+
+
+def _instance_ids(*values: str) -> set[str]:
+    ids: set[str] = set()
+    pattern = re.compile(
+        r"(?i)\b(?:asset|aas|sm|submodel|machine|equipment|pump|motor|line|device|pressure|temperature|temp|flow|speed|vibration|state|status|class|signal)[-_ ]?(\d+)\b"
+    )
+    for value in values:
+        text = str(value or "")
+        for match in pattern.finditer(text):
+            ids.add(str(int(match.group(1))))
+        for match in re.finditer(r"(?i)(?:^|[;/])s=([A-Za-z]+)(\d+)\b", text):
+            if match.group(1).lower() in {"pressure", "temperature", "temp", "flow", "speed", "vibration", "state", "status", "pump", "motor"}:
+                ids.add(str(int(match.group(2))))
+    return ids
+
+
 def _node_dtype(node: CanonicalNode) -> str:
     attrs = node.attributes or {}
     meta = attrs.get("metadata", {}) if isinstance(attrs.get("metadata", {}), dict) else {}
     for key in ("dtype", "datatype", "valueType", "dataType", "type"):
         value = attrs.get(key) or meta.get(key)
         if value:
-            return str(value).upper()
+            return _normalize_dtype(str(value))
     return ""
 
 
@@ -89,12 +118,16 @@ class RuleEngine:
         for target_node in target_nodes:
             target_label = _norm(target_node.label or target_node.id)
             label_sim = difflib.SequenceMatcher(a=source_label, b=target_label).ratio()
-            dtype_match = 1.0 if source_dtype and _node_dtype(target_node) and source_dtype == _node_dtype(target_node) else (0.4 if not source_dtype or not _node_dtype(target_node) else 0.0)
+            target_dtype = _node_dtype(target_node)
+            dtype_match = 1.0 if source_dtype and target_dtype and source_dtype == target_dtype else (0.4 if not source_dtype or not target_dtype else 0.0)
             unit_match = 1.0 if source_unit and _node_unit(target_node) and source_unit.lower() == _node_unit(target_node).lower() else (0.5 if not source_unit or not _node_unit(target_node) else 0.0)
             src_parent = source_node.id.rsplit("/", 2)[-2] if "/" in source_node.id else ""
             tgt_parent = target_node.id.rsplit("/", 2)[-2] if "/" in target_node.id else ""
+            source_ids = _instance_ids(source_node.id, source_node.label or "", src_parent)
+            target_ids = _instance_ids(target_node.id, target_node.label or "", tgt_parent)
             context_match = 1.0 if src_parent and tgt_parent and _norm(src_parent) == _norm(tgt_parent) else 0.0
-            score = (label_sim * 0.6) + (dtype_match * 0.2) + (unit_match * 0.1) + (context_match * 0.1)
+            instance_match = 1.0 if source_ids and target_ids and source_ids & target_ids else (0.0 if source_ids and target_ids else 0.5)
+            score = (label_sim * 0.48) + (dtype_match * 0.16) + (unit_match * 0.08) + (context_match * 0.08) + (instance_match * 0.20)
             evidence = ["rule:label_similarity"]
             if dtype_match >= 1.0:
                 evidence.append("rule:datatype_compatible")
@@ -102,6 +135,8 @@ class RuleEngine:
                 evidence.append("rule:unit_compatible")
             if context_match >= 1.0:
                 evidence.append("rule:context_match")
+            if instance_match >= 1.0:
+                evidence.append("rule:instance_id_match")
             if best is None or score > best[1]:
                 best = (target_node, score, evidence)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 from xml.etree import ElementTree as ET
 
 from isynkgr.canonical.model import CanonicalEdge, CanonicalModel, CanonicalNode
@@ -8,6 +9,21 @@ from isynkgr.canonical.schemas import ValidationReport, ValidationViolation
 from isynkgr.icr.entities import Endpoint, build_endpoint_path
 
 UA_TYPES = {"UAObjectType", "UAVariable", "UADataType"}
+
+
+def _semantic_metadata(*values: str) -> dict[str, str]:
+    text = " ".join(str(v or "") for v in values).lower()
+    if "pressure" in text:
+        return {"datatype": "FLOAT", "unit": "bar", "semantic_signal": "pressure"}
+    if "temperature" in text or re.search(r"\btemp\b", text):
+        return {"datatype": "FLOAT", "unit": "C", "semantic_signal": "temperature"}
+    if "flow" in text:
+        return {"datatype": "FLOAT", "unit": "l/s", "semantic_signal": "flow"}
+    if "speed" in text:
+        return {"datatype": "FLOAT", "unit": "rpm", "semantic_signal": "speed"}
+    if "state" in text or "status" in text:
+        return {"datatype": "STRING", "semantic_signal": "state"}
+    return {}
 
 
 class OPCUAAdapter:
@@ -26,7 +42,15 @@ class OPCUAAdapter:
                 nid = elem.attrib.get("NodeId", "")
                 if not nid:
                     continue
-                endpoint = Endpoint(id=nid, path=build_endpoint_path(self.name, nid), protocol=self.name, label=elem.attrib.get("BrowseName"), metadata={"DisplayName": (elem.findtext("{*}DisplayName") or ""), "raw_id": nid})
+                browse_name = elem.attrib.get("BrowseName")
+                display_name = elem.findtext("{*}DisplayName") or ""
+                endpoint = Endpoint(
+                    id=nid,
+                    path=build_endpoint_path(self.name, nid),
+                    protocol=self.name,
+                    label=browse_name,
+                    metadata={"DisplayName": display_name, "raw_id": nid, **_semantic_metadata(nid, browse_name or "", display_name)},
+                )
                 model.nodes.append(CanonicalNode(id=endpoint.path, type=tag, label=endpoint.label, attributes=endpoint.model_dump()))
                 for r in elem.findall("{*}References/{*}Reference"):
                     if r.text:

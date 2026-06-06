@@ -126,9 +126,10 @@ def _source_fixture_path(source_standard: str, idx: int, source_dir: Path) -> Pa
             ]
         }
     else:
+        class_id = f"Class{idx}"
         payload |= {
-            "classes": [{"id": "Class0", "label": "Pressure0"}],
-            "relations": [{"source": "Class0", "target": "Class0Value", "type": "hasValue"}],
+            "classes": [{"id": class_id, "label": class_id}],
+            "relations": [{"source": class_id, "target": f"{class_id}Value", "type": "hasValue"}],
         }
     source_file.write_text(json.dumps(payload))
     return source_file

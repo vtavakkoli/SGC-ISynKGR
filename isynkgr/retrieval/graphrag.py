@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass
 
 from isynkgr.canonical.model import CanonicalModel, CanonicalNode
@@ -20,6 +21,29 @@ class TargetCandidate:
 
 def _norm(text: str) -> str:
     return str(text or "").strip().lower().replace("_", " ")
+
+
+def _instance_ids(*values: str) -> set[str]:
+    ids: set[str] = set()
+    pattern = re.compile(
+        r"(?i)\b(?:asset|aas|sm|submodel|machine|equipment|pump|motor|line|device|pressure|temperature|temp|flow|speed|vibration|state|status|class|signal)[-_ ]?(\d+)\b"
+    )
+    for value in values:
+        text = str(value or "")
+        for match in pattern.finditer(text):
+            ids.add(str(int(match.group(1))))
+        for match in re.finditer(r"(?i)(?:^|[;/])s=([A-Za-z]+)(\d+)\b", text):
+            if match.group(1).lower() in {"pressure", "temperature", "temp", "flow", "speed", "vibration", "state", "status", "pump", "motor"}:
+                ids.add(str(int(match.group(2))))
+    return ids
+
+
+def _instance_match(source_node: CanonicalNode, candidate: "TargetCandidate") -> float:
+    src_ids = _instance_ids(source_node.id, source_node.label or "")
+    tgt_ids = _instance_ids(candidate.target_path, candidate.label, candidate.parent)
+    if src_ids and tgt_ids:
+        return 1.0 if src_ids & tgt_ids else 0.0
+    return 0.5
 
 
 def _generic_label_penalty(label: str) -> float:
@@ -110,7 +134,20 @@ class GraphRAGRetriever:
                 unit_match = 1.0 if src_unit and candidate.unit and src_unit.lower() == candidate.unit.lower() else (0.5 if not src_unit or not candidate.unit else 0.0)
                 context_hint = 1.0 if candidate.parent and _norm(candidate.parent).split("/")[-1] in src_label else 0.0
                 penalty = _generic_label_penalty(candidate.label)
-                score = min(1.0, max(0.0, (lexical * 0.55) + (dtype_match * 0.2) + (unit_match * 0.15) + (context_hint * 0.1) + vector_boost - penalty))
+                instance_match = _instance_match(src_node, candidate)
+                score = min(
+                    1.0,
+                    max(
+                        0.0,
+                        (lexical * 0.45)
+                        + (dtype_match * 0.18)
+                        + (unit_match * 0.12)
+                        + (context_hint * 0.08)
+                        + (instance_match * 0.17)
+                        + vector_boost
+                        - penalty,
+                    ),
+                )
                 breakdown = {
                     "lexical": lexical,
                     "label_similarity": label_similarity,
@@ -118,6 +155,7 @@ class GraphRAGRetriever:
                     "datatype_match": dtype_match,
                     "unit_match": unit_match,
                     "context_hint": context_hint,
+                    "instance_match": instance_match,
                     "vector_boost": vector_boost,
                     "generic_label_penalty": penalty,
                 }

@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 from statistics import fmean
 
+from benchmark.metrics import mean_std_ci
 from benchmark.scenarios import COMPONENT_FLAGS
 
 CANONICAL_METRIC_KEYS = ("precision", "recall", "f1", "validity_pass_rate", "violation_counts")
@@ -13,6 +14,18 @@ CANONICAL_METRIC_KEYS = ("precision", "recall", "f1", "validity_pass_rate", "vio
 
 def _fmt(value: float) -> str:
     return f"{value:.3f}"
+
+
+def _fmt_pm(mean_value: float, std_value: float) -> str:
+    return f"{_fmt(mean_value)} ± {_fmt(std_value)}"
+
+
+def _mark_pair_winners(rows: list[dict]) -> dict[str, float]:
+    best_by_pair: dict[str, float] = {}
+    for row in rows:
+        pair = str(row.get("pair", "aggregate"))
+        best_by_pair[pair] = max(best_by_pair.get(pair, float("-inf")), float(row.get("f1_mean", 0.0)))
+    return best_by_pair
 
 
 def _markdown_table(rows: list[dict], columns: list[str]) -> str:
@@ -188,6 +201,7 @@ def _scenario_type(scenario: str) -> str:
     return "other"
 
 
+
 def _aggregate_rows_by_scenario_type(rows: list[dict]) -> list[dict]:
     buckets: dict[str, list[dict]] = {}
     for row in rows:
@@ -197,12 +211,12 @@ def _aggregate_rows_by_scenario_type(rows: list[dict]) -> list[dict]:
 
     aggregated: list[dict] = []
     for scenario_type, items in buckets.items():
-        f1_values = [float(i.get("f1", 0.0)) for i in items]
-        validity_values = [float(i.get("validity_pass_rate", 0.0)) for i in items]
-        precision_values = [float(i.get("precision", 0.0)) for i in items]
-        recall_values = [float(i.get("recall", 0.0)) for i in items]
-        latency_values = [float(i.get("latency_per_sample_s", 0.0)) for i in items]
-        runtime_values = [float(i.get("runtime_per_scenario_s", 0.0)) for i in items]
+        f1_stats = mean_std_ci([float(i.get("f1", 0.0)) for i in items])
+        validity_stats = mean_std_ci([float(i.get("validity_pass_rate", 0.0)) for i in items])
+        precision_stats = mean_std_ci([float(i.get("precision", 0.0)) for i in items])
+        recall_stats = mean_std_ci([float(i.get("recall", 0.0)) for i in items])
+        latency_stats = mean_std_ci([float(i.get("latency_per_sample_s", 0.0)) for i in items])
+        runtime_stats = mean_std_ci([float(i.get("runtime_per_scenario_s", 0.0)) for i in items])
         scenario_set = sorted({_scenario_baseline(i) for i in items})
         pair_set = sorted({str(i.get("pair", "aggregate")) for i in items})
         aggregated.append(
@@ -212,12 +226,18 @@ def _aggregate_rows_by_scenario_type(rows: list[dict]) -> list[dict]:
                 "scenarios": ", ".join(scenario_set),
                 "pairs_covered": ", ".join(pair_set),
                 "runs": len(items),
-                "precision_mean": fmean(precision_values) if precision_values else 0.0,
-                "recall_mean": fmean(recall_values) if recall_values else 0.0,
-                "f1_mean": fmean(f1_values) if f1_values else 0.0,
-                "validity_mean": fmean(validity_values) if validity_values else 0.0,
-                "latency_mean": fmean(latency_values) if latency_values else 0.0,
-                "runtime_mean": fmean(runtime_values) if runtime_values else 0.0,
+                "precision_mean": precision_stats["mean"],
+                "precision_std": precision_stats["std"],
+                "recall_mean": recall_stats["mean"],
+                "recall_std": recall_stats["std"],
+                "f1_mean": f1_stats["mean"],
+                "f1_std": f1_stats["std"],
+                "validity_mean": validity_stats["mean"],
+                "validity_std": validity_stats["std"],
+                "latency_mean": latency_stats["mean"],
+                "latency_std": latency_stats["std"],
+                "runtime_mean": runtime_stats["mean"],
+                "runtime_std": runtime_stats["std"],
             }
         )
 
@@ -230,22 +250,27 @@ def _aggregate_rows(rows: list[dict]) -> list[dict]:
         buckets.setdefault(_scenario_name(row), []).append(row)
     aggregated: list[dict] = []
     for scenario, items in buckets.items():
-        f1_values = [float(i.get("f1", 0.0)) for i in items]
-        validity_values = [float(i.get("validity_pass_rate", 0.0)) for i in items]
+        f1_stats = mean_std_ci([float(i.get("f1", 0.0)) for i in items])
+        validity_stats = mean_std_ci([float(i.get("validity_pass_rate", 0.0)) for i in items])
+        precision_stats = mean_std_ci([float(i.get("precision", 0.0)) for i in items])
+        recall_stats = mean_std_ci([float(i.get("recall", 0.0)) for i in items])
         aggregated.append(
             {
                 "scenario": scenario,
                 "pair": scenario.split("::", 1)[0] if "::" in scenario else "aggregate",
                 "baseline": scenario.split("::", 1)[1] if "::" in scenario else scenario,
                 "runs": len(items),
-                "f1_mean": sum(f1_values) / max(len(f1_values), 1),
-                "f1_std": (sum((x - (sum(f1_values) / max(len(f1_values), 1))) ** 2 for x in f1_values) / max(len(f1_values), 1)) ** 0.5 if f1_values else 0.0,
-                "validity_mean": sum(validity_values) / max(len(validity_values), 1),
-                "validity_std": (sum((x - (sum(validity_values) / max(len(validity_values), 1))) ** 2 for x in validity_values) / max(len(validity_values), 1)) ** 0.5 if validity_values else 0.0,
+                "precision_mean": precision_stats["mean"],
+                "precision_std": precision_stats["std"],
+                "recall_mean": recall_stats["mean"],
+                "recall_std": recall_stats["std"],
+                "f1_mean": f1_stats["mean"],
+                "f1_std": f1_stats["std"],
+                "validity_mean": validity_stats["mean"],
+                "validity_std": validity_stats["std"],
             }
         )
     return sorted(aggregated, key=lambda r: r["f1_mean"], reverse=True)
-
 
 def _aggregate_rows_by_scenario(rows: list[dict]) -> list[dict]:
     buckets: dict[str, list[dict]] = {}
@@ -254,25 +279,22 @@ def _aggregate_rows_by_scenario(rows: list[dict]) -> list[dict]:
 
     aggregated: list[dict] = []
     for scenario, items in buckets.items():
-        f1_values = [float(i.get("f1", 0.0)) for i in items]
-        validity_values = [float(i.get("validity_pass_rate", 0.0)) for i in items]
+        f1_stats = mean_std_ci([float(i.get("f1", 0.0)) for i in items])
+        validity_stats = mean_std_ci([float(i.get("validity_pass_rate", 0.0)) for i in items])
         pair_set = sorted({str(i.get("pair", "aggregate")) for i in items})
-        mean_f1 = sum(f1_values) / max(len(f1_values), 1)
-        mean_validity = sum(validity_values) / max(len(validity_values), 1)
         aggregated.append(
             {
                 "scenario": scenario,
                 "workflow": _scenario_workflow(scenario),
                 "pairs_covered": ", ".join(pair_set),
                 "runs": len(items),
-                "f1_mean": mean_f1,
-                "f1_std": (sum((x - mean_f1) ** 2 for x in f1_values) / max(len(f1_values), 1)) ** 0.5 if f1_values else 0.0,
-                "validity_mean": mean_validity,
-                "validity_std": (sum((x - mean_validity) ** 2 for x in validity_values) / max(len(validity_values), 1)) ** 0.5 if validity_values else 0.0,
+                "f1_mean": f1_stats["mean"],
+                "f1_std": f1_stats["std"],
+                "validity_mean": validity_stats["mean"],
+                "validity_std": validity_stats["std"],
             }
         )
     return sorted(aggregated, key=lambda r: r["f1_mean"], reverse=True)
-
 
 def _metric(row: dict, key: str) -> float:
     return float(row.get(key, 0.0))
@@ -331,14 +353,17 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
     ]
     validity_breakdown = _build_validity_breakdown(violations)
 
+    best_f1_by_pair = _mark_pair_winners(aggregated_rows)
     summary_rows = [
         {
-            "scenario": r["scenario"].split("::", 1)[1] if "::" in r["scenario"] else r["scenario"],
-            "pair": r["scenario"].split("::", 1)[0] if "::" in r["scenario"] else "aggregate",
-            "f1": _fmt(r["f1"]),
-            "validity_pass_rate": _fmt(r["validity_pass_rate"]),
+            "pair": r["pair"],
+            "scenario": r["baseline"],
+            "runs": r["runs"],
+            "f1_mean ± SD": _fmt_pm(r["f1_mean"], r["f1_std"]),
+            "validity_mean ± SD": _fmt_pm(r["validity_mean"], r["validity_std"]),
+            "winner": "✓" if abs(float(r["f1_mean"]) - best_f1_by_pair.get(str(r["pair"]), -1.0)) < 1e-12 else "",
         }
-        for r in ranked_f1
+        for r in aggregated_rows
     ]
 
     report_payload = {
@@ -394,18 +419,67 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
                 "scenario_count",
                 "runs",
                 "precision_mean",
+                "precision_std",
                 "recall_mean",
+                "recall_std",
                 "f1_mean",
+                "f1_std",
+                "f1_mean_pm_std",
                 "validity_mean",
+                "validity_std",
+                "validity_mean_pm_std",
                 "latency_mean",
+                "latency_std",
                 "runtime_mean",
+                "runtime_std",
                 "pairs_covered",
                 "scenarios",
             ],
         )
         writer.writeheader()
         for row in scenario_type_rows:
-            writer.writerow(row)
+            writer.writerow({**row, "f1_mean_pm_std": _fmt_pm(row["f1_mean"], row["f1_std"]), "validity_mean_pm_std": _fmt_pm(row["validity_mean"], row["validity_std"])})
+
+    with (metrics_dir / "aggregated_per_scenario.csv").open("w", newline="") as fp:
+        writer = csv.DictWriter(
+            fp,
+            fieldnames=[
+                "pair",
+                "scenario",
+                "runs",
+                "precision_mean",
+                "precision_std",
+                "recall_mean",
+                "recall_std",
+                "f1_mean",
+                "f1_std",
+                "f1_mean_pm_std",
+                "validity_mean",
+                "validity_std",
+                "validity_mean_pm_std",
+                "winner",
+            ],
+        )
+        writer.writeheader()
+        for row in aggregated_rows:
+            writer.writerow(
+                {
+                    "pair": row["pair"],
+                    "scenario": row["baseline"],
+                    "runs": row["runs"],
+                    "precision_mean": row.get("precision_mean", 0.0),
+                    "precision_std": row.get("precision_std", 0.0),
+                    "recall_mean": row.get("recall_mean", 0.0),
+                    "recall_std": row.get("recall_std", 0.0),
+                    "f1_mean": row["f1_mean"],
+                    "f1_std": row["f1_std"],
+                    "f1_mean_pm_std": _fmt_pm(row["f1_mean"], row["f1_std"]),
+                    "validity_mean": row["validity_mean"],
+                    "validity_std": row["validity_std"],
+                    "validity_mean_pm_std": _fmt_pm(row["validity_mean"], row["validity_std"]),
+                    "winner": abs(float(row["f1_mean"]) - best_f1_by_pair.get(str(row["pair"]), -1.0)) < 1e-12,
+                }
+            )
 
     md = [
         "# ISynKGR Benchmark Report",
@@ -419,7 +493,7 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
         "Canonical metric keys consumed from evaluator: `precision`, `recall`, `f1`, `validity_pass_rate`, `violation_counts`.",
         "",
         "## Main results",
-        _markdown_table(summary_rows, ["pair", "scenario", "f1", "validity_pass_rate"]),
+        _markdown_table(summary_rows, ["pair", "scenario", "runs", "f1_mean ± SD", "validity_mean ± SD", "winner"]),
         "",
         "## Cumulative scenario-type summary (all scenario families)",
         _markdown_table(
@@ -430,13 +504,13 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
                     "runs": r["runs"],
                     "precision_mean": _fmt(r["precision_mean"]),
                     "recall_mean": _fmt(r["recall_mean"]),
-                    "f1_mean": _fmt(r["f1_mean"]),
-                    "validity_mean": _fmt(r["validity_mean"]),
+                    "f1_mean ± SD": _fmt_pm(r["f1_mean"], r["f1_std"]),
+                    "validity_mean ± SD": _fmt_pm(r["validity_mean"], r["validity_std"]),
                     "latency_mean": _fmt(r["latency_mean"]),
                 }
                 for r in scenario_type_rows
             ],
-            ["scenario_type", "scenario_count", "runs", "precision_mean", "recall_mean", "f1_mean", "validity_mean", "latency_mean"],
+            ["scenario_type", "scenario_count", "runs", "precision_mean", "recall_mean", "f1_mean ± SD", "validity_mean ± SD", "latency_mean"],
         ),
         "",
         "## Scenario grouped summary (all pairs/seeds)",
@@ -447,12 +521,12 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
                     "workflow": r["workflow"],
                     "pairs_covered": r["pairs_covered"],
                     "runs": r["runs"],
-                    "f1_mean": _fmt(r["f1_mean"]),
-                    "validity_mean": _fmt(r["validity_mean"]),
+                    "f1_mean ± SD": _fmt_pm(r["f1_mean"], r["f1_std"]),
+                    "validity_mean ± SD": _fmt_pm(r["validity_mean"], r["validity_std"]),
                 }
                 for r in scenario_grouped_rows
             ],
-            ["scenario", "workflow", "pairs_covered", "runs", "f1_mean", "validity_mean"],
+            ["scenario", "workflow", "pairs_covered", "runs", "f1_mean ± SD", "validity_mean ± SD"],
         ),
         "",
         "## Aggregated per-scenario summary (mean/std across seeds)",
@@ -462,14 +536,13 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
                     "pair": r["pair"],
                     "scenario": r["baseline"],
                     "runs": r["runs"],
-                    "f1_mean": _fmt(r["f1_mean"]),
-                    "f1_std": _fmt(r["f1_std"]),
-                    "validity_mean": _fmt(r["validity_mean"]),
-                    "validity_std": _fmt(r["validity_std"]),
+                    "f1_mean ± SD": _fmt_pm(r["f1_mean"], r["f1_std"]),
+                    "validity_mean ± SD": _fmt_pm(r["validity_mean"], r["validity_std"]),
+                    "winner": "✓" if abs(float(r["f1_mean"]) - best_f1_by_pair.get(str(r["pair"]), -1.0)) < 1e-12 else "",
                 }
                 for r in aggregated_rows
             ],
-            ["pair", "scenario", "runs", "f1_mean", "f1_std", "validity_mean", "validity_std"],
+            ["pair", "scenario", "runs", "f1_mean ± SD", "validity_mean ± SD", "winner"],
         ),
         "",
         "## Ablation study",
@@ -589,7 +662,7 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
         "seconds",
     )
 
-    summary_table_html = _html_table(summary_rows, ["pair", "scenario", "f1", "validity_pass_rate"])
+    summary_table_html = _html_table(summary_rows, ["pair", "scenario", "runs", "f1_mean ± SD", "validity_mean ± SD", "winner"])
     validity_table = html.escape(_markdown_table(validity_breakdown, ["reason", "count"]))
     raw_json = html.escape(json.dumps(report_payload, indent=2))
     scenario_type_table_html = _html_table(
@@ -598,13 +671,13 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
                 "scenario_type": r["scenario_type"],
                 "scenario_count": r["scenario_count"],
                 "runs": r["runs"],
-                "f1_mean": _fmt(r["f1_mean"]),
-                "validity_mean": _fmt(r["validity_mean"]),
+                "f1_mean ± SD": _fmt_pm(r["f1_mean"], r["f1_std"]),
+                "validity_mean ± SD": _fmt_pm(r["validity_mean"], r["validity_std"]),
                 "latency_mean": _fmt(r["latency_mean"]),
             }
             for r in scenario_type_rows
         ],
-        ["scenario_type", "scenario_count", "runs", "f1_mean", "validity_mean", "latency_mean"],
+        ["scenario_type", "scenario_count", "runs", "f1_mean ± SD", "validity_mean ± SD", "latency_mean"],
     )
     html_content = f"""<html><head><style>
 body{{font-family:Inter,Segoe UI,Arial,sans-serif;margin:0;background:#f8fafc;color:#0f172a;}}

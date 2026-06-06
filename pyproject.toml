@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sgc-isynkgr"
+version = "0.1.0"
+description = "Semantic Graph-Calibrated ISynKGR model and benchmark for industrial schema mapping"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.6,<3",
+  "matplotlib>=3.8,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "ruff>=0.6,<1",
+]
+
+benchmark = [
+  "matplotlib>=3.8,<4",
+]
+
+[project.scripts]
+isynkgr-benchmark = "isynkgr.cli:run_bench_cli"
+isynkgr-gen-samples = "isynkgr.cli:gen_samples_main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["isynkgr*", "benchmark*"]

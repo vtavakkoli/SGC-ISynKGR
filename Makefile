@@ -1,0 +1,46 @@
+.PHONY: install lint test \
+	example-opcua-aas example-aas-opcua \
+	benchmark-small benchmark-full reproduce final-report \
+	docker-sample-validate docker-full-run docker-run-scenario docker-evaluate docker-report
+
+install:
+	pip install --no-build-isolation -e .
+
+lint:
+	ruff check isynkgr benchmark tests
+
+test:
+	PYTHONPATH=. pytest -q
+
+example-opcua-aas:
+	PYTHONPATH=. python examples/translate_opcua_to_aas.py
+
+example-aas-opcua:
+	PYTHONPATH=. python examples/translate_aas_to_opcua.py
+
+benchmark-small:
+	PYTHONPATH=. python -m benchmark.harness
+
+benchmark-full:
+	FULL=1 PYTHONPATH=. python -m benchmark.harness
+
+reproduce:
+	PYTHONPATH=. python -m benchmark.harness && PYTHONPATH=. python -m benchmark.harness
+
+final-report:
+	PYTHONPATH=. python -m benchmark.final_report
+
+docker-sample-validate:
+	docker compose up --build sample-validate
+
+docker-full-run:
+	docker compose up --build full-run
+
+docker-run-scenario:
+	docker compose up --build run-scenario
+
+docker-evaluate:
+	docker compose run --rm evaluate
+
+docker-report:
+	docker compose run --rm report

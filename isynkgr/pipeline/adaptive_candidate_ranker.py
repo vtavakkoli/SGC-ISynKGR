@@ -53,8 +53,6 @@ class TranslatorConfig:
 
 ADAPTERS = {"opcua": OPCUAAdapter(), "aas": AASAdapter(), "iec61499": IEC61499Adapter(), "ieee1451": IEEE1451Adapter(), "iso15926": ISO15926Adapter()}
 RETRIEVAL_CONFIDENCE_THRESHOLD = 0.5
-EXPLICIT_CANDIDATE_CONFIDENCE_THRESHOLD = 0.35
-ACCEPTED_MAPPING_CONFIDENCE_FLOOR = 0.5
 _NUMERIC_DTYPES = {"FLOAT", "DOUBLE", "DECIMAL", "INT", "INTEGER", "NUMBER", "XS:DOUBLE", "XS:FLOAT", "XS:DECIMAL", "XS:INT"}
 
 
@@ -277,12 +275,43 @@ def _path_tokens(path: str) -> set[str]:
     return {t.lower() for t in re.findall(r"[A-Za-z0-9_-]+", str(path or "")) if t}
 
 
+def _is_measurement_like_node(node: CanonicalNode) -> bool:
+    node_type = str(node.type or "").strip().lower()
+    text = " ".join([str(node.label or ""), str(node.id or ""), node_type]).lower()
+    measurement_node_types = {"channel", "signal", "property", "sensor", "variable", "uavariable", "output", "input"}
+    measurement_terms = {
+        "measurement",
+        "measure",
+        "value",
+        "temp",
+        "temperature",
+        "pressure",
+        "flow",
+        "speed",
+        "current",
+        "voltage",
+        "vibration",
+        "state",
+        "status",
+        "setpoint",
+    }
+    if node_type in measurement_node_types:
+        return True
+    if _guess_dtype(node) or _guess_unit(node):
+        return True
+    return any(term in text for term in measurement_terms)
+
+
 def _is_equipment_label_without_measurement(node: CanonicalNode) -> bool:
+    node_type = str(node.type or "").strip().lower()
+    if _is_measurement_like_node(node):
+        return False
+
     label = " ".join(
         [
             str(node.label or ""),
             str(node.id or ""),
-            str(node.type or ""),
+            node_type,
         ]
     ).lower()
     structural_types = {"asset", "submodel", "resource", "functionblock", "device", "object", "teds"}
@@ -300,10 +329,8 @@ def _is_equipment_label_without_measurement(node: CanonicalNode) -> bool:
         "fb",
         "teds",
     }
-    measurement_terms = {"temp", "temperature", "pressure", "flow", "speed", "current", "voltage", "vibration", "state", "status", "setpoint"}
-    has_equipment = any(term in label for term in equipment_terms) or str(node.type or "").strip().lower() in structural_types
-    has_measurement = any(term in label for term in measurement_terms)
-    return has_equipment and not has_measurement
+    has_equipment = any(term in label for term in equipment_terms) or node_type in structural_types
+    return has_equipment
 
 
 _SEMANTIC_ALIASES: dict[str, str] = {
@@ -334,6 +361,8 @@ _STOP_TOKENS = {
     "elements", "asset", "device", "resource", "fb", "node", "ns", "s", "i", "id",
 }
 
+_SIGNAL_TERMS = {"temperature", "pressure", "flow", "speed", "state", "vibration"}
+
 
 def _split_semantic_tokens(*values: str) -> set[str]:
     tokens: set[str] = set()
@@ -346,18 +375,12 @@ def _split_semantic_tokens(*values: str) -> set[str]:
     return tokens
 
 
-def _instance_ids(*values: str) -> set[str]:
-    """Extract benchmark instance ids without treating protocol internals as ids.
-
-    OPC UA NodeId numbers such as ns=2;i=2007 are internal addresses.  In the
-    benchmark, the semantic instance is instead carried by labels/paths such as
-    asset-7, sm-7, Pump7, Pressure7, or s=Pressure7.  Keeping these separate
-    fixes the AAS->OPCUA reverse direction without adding a gold-target shortcut.
-    """
+def _semantic_instance_ids(*values: str) -> set[str]:
+    """Extract instance ids attached to semantic labels, not protocol internals."""
 
     ids: set[str] = set()
     pattern = re.compile(
-        r"(?i)\b(?:asset|aas|sm|submodel|machine|equipment|pump|motor|line|device|pressure|temperature|temp|flow|speed|vibration|state|status|class|signal)[-_ ]?(\d+)\b"
+        r"(?i)\b(?:pump|motor|pressure|temperature|temp|flow|speed|vibration|state|status|class|signal|channel)[-_ ]?(\d+)\b"
     )
     for value in values:
         text = str(value or "")
@@ -370,11 +393,41 @@ def _instance_ids(*values: str) -> set[str]:
     return ids
 
 
+def _context_instance_ids(*values: str) -> set[str]:
+    """Extract asset/submodel/equipment ids used as context for contained measurements."""
+
+    ids: set[str] = set()
+    pattern = re.compile(r"(?i)\b(?:asset|aas|sm|submodel|machine|equipment|device)[-_ ]?(\d+)\b")
+    for value in values:
+        for match in pattern.finditer(str(value or "")):
+            ids.add(str(int(match.group(1))))
+    return ids
+
+
+def _instance_ids(*values: str) -> set[str]:
+    return _semantic_instance_ids(*values) | _context_instance_ids(*values)
+
+
 def _instance_alignment(source_node: CanonicalNode, target_node: CanonicalNode, source_path: str, target_path: str, source_parent: str, target_parent: str) -> float:
-    src_ids = _instance_ids(source_path, source_parent, source_node.id, source_node.label or "", _node_text(source_node))
-    tgt_ids = _instance_ids(target_path, target_parent, target_node.id, target_node.label or "", _node_text(target_node))
-    if src_ids and tgt_ids:
-        return 1.0 if src_ids & tgt_ids else 0.0
+    src_text = _node_text(source_node)
+    tgt_text = _node_text(target_node)
+    src_semantic_ids = _semantic_instance_ids(source_path, source_node.id, source_node.label or "", src_text)
+    tgt_semantic_ids = _semantic_instance_ids(target_path, target_node.id, target_node.label or "", tgt_text)
+    if src_semantic_ids and tgt_semantic_ids:
+        return 1.0 if src_semantic_ids & tgt_semantic_ids else 0.0
+
+    src_context_ids = _context_instance_ids(source_path, source_parent, source_node.id, source_node.label or "", src_text)
+    tgt_context_ids = _context_instance_ids(target_path, target_parent, target_node.id, target_node.label or "", tgt_text)
+    src_signal = _split_semantic_tokens(src_text, source_path) & _SIGNAL_TERMS
+    tgt_signal = _split_semantic_tokens(tgt_text, target_path) & _SIGNAL_TERMS
+    same_known_signal = bool(src_signal and tgt_signal and src_signal == tgt_signal)
+
+    if src_context_ids and tgt_semantic_ids and same_known_signal:
+        return 1.0 if src_context_ids & tgt_semantic_ids else 0.0
+    if src_semantic_ids and tgt_context_ids and same_known_signal:
+        return 1.0 if src_semantic_ids & tgt_context_ids else 0.0
+    if src_context_ids and tgt_context_ids and same_known_signal:
+        return 1.0 if src_context_ids & tgt_context_ids else 0.0
     # Neutral when one side has no semantic instance id; this avoids penalising
     # generic IEEE 1451 channel targets such as Channel0.
     return 0.5
@@ -407,9 +460,93 @@ def _same_signal_family(source_node: CanonicalNode, target_node: CanonicalNode) 
     signal_terms = {"temperature", "pressure", "flow", "speed", "state", "vibration"}
     src_signal = source_tokens & signal_terms
     tgt_signal = target_tokens & signal_terms
-    if not src_signal and not tgt_signal:
+    if not src_signal or not tgt_signal:
         return 0.5
-    return 1.0 if src_signal and src_signal == tgt_signal else 0.0
+    return 1.0 if src_signal == tgt_signal else 0.0
+
+
+def _has_conflicting_instance_ids(
+    source_node: CanonicalNode,
+    target_node: CanonicalNode,
+    source_path: str,
+    target_path: str,
+    source_parent: str,
+    target_parent: str,
+) -> bool:
+    src_text = _node_text(source_node)
+    tgt_text = _node_text(target_node)
+    src_semantic_ids = _semantic_instance_ids(source_path, source_node.id, source_node.label or "", src_text)
+    tgt_semantic_ids = _semantic_instance_ids(target_path, target_node.id, target_node.label or "", tgt_text)
+    if src_semantic_ids and tgt_semantic_ids:
+        return not bool(src_semantic_ids & tgt_semantic_ids)
+
+    src_context_ids = _context_instance_ids(source_path, source_parent, source_node.id, source_node.label or "", src_text)
+    tgt_context_ids = _context_instance_ids(target_path, target_parent, target_node.id, target_node.label or "", tgt_text)
+    src_signal = _split_semantic_tokens(src_text, source_path) & _SIGNAL_TERMS
+    tgt_signal = _split_semantic_tokens(tgt_text, target_path) & _SIGNAL_TERMS
+    same_known_signal = bool(src_signal and tgt_signal and src_signal == tgt_signal)
+    if src_context_ids and tgt_semantic_ids and same_known_signal:
+        return not bool(src_context_ids & tgt_semantic_ids)
+    if src_semantic_ids and tgt_context_ids and same_known_signal:
+        return not bool(src_semantic_ids & tgt_context_ids)
+    if src_context_ids and tgt_context_ids and same_known_signal:
+        return not bool(src_context_ids & tgt_context_ids)
+    return False
+
+
+def _logical_candidate_score(
+    *,
+    source_node: CanonicalNode,
+    target_node: CanonicalNode,
+    source_path: str,
+    target_path: str,
+    source_parent: str,
+    target_parent: str,
+    single_candidate: bool,
+) -> tuple[float, dict[str, float]]:
+    lexical = _lexical_similarity(source_node.label or source_node.id, target_node.label or target_node.id)
+    datatype_compat = _dtype_compatible(_guess_dtype(source_node), _guess_dtype(target_node))
+    source_unit = _guess_unit(source_node)
+    target_unit = _guess_unit(target_node)
+    unit_compat = 1.0 if source_unit and target_unit and source_unit == target_unit else (0.5 if not source_unit or not target_unit else 0.0)
+    parent_sim = _lexical_similarity(source_parent, target_parent) if source_parent or target_parent else 0.5
+    signal_family = _same_signal_family(source_node, target_node)
+    instance_alignment = _instance_alignment(source_node, target_node, source_path, target_path, source_parent, target_parent)
+    source_tokens = _path_tokens(source_path) | _path_tokens(source_parent)
+    target_tokens = _path_tokens(target_path) | _path_tokens(target_parent)
+    context_score = min(1.0, len(source_tokens & target_tokens) / 3.0) if target_tokens else 0.0
+    measurement_bonus = 1.0 if _is_measurement_like_node(source_node) and _is_measurement_like_node(target_node) else 0.0
+    structural_penalty = 0.28 if _is_equipment_label_without_measurement(source_node) or _is_equipment_label_without_measurement(target_node) else 0.0
+    conflict_penalty = 0.22 if _has_conflicting_instance_ids(source_node, target_node, source_path, target_path, source_parent, target_parent) else 0.0
+    single_candidate_bonus = 0.12 if single_candidate else 0.0
+
+    score = (
+        lexical * 0.14
+        + datatype_compat * 0.18
+        + unit_compat * 0.12
+        + parent_sim * 0.05
+        + context_score * 0.06
+        + signal_family * 0.14
+        + instance_alignment * 0.22
+        + measurement_bonus * 0.07
+        + single_candidate_bonus
+        - structural_penalty
+        - conflict_penalty
+    )
+    score = max(0.0, min(1.0, score))
+    return score, {
+        "logical_lexical_similarity": lexical,
+        "logical_datatype_compatibility": datatype_compat,
+        "logical_unit_compatibility": unit_compat,
+        "logical_parent_similarity": parent_sim,
+        "logical_path_context_similarity": context_score,
+        "logical_signal_family": signal_family,
+        "logical_instance_alignment": instance_alignment,
+        "logical_measurement_bonus": measurement_bonus,
+        "logical_single_candidate_bonus": single_candidate_bonus,
+        "logical_structural_penalty": structural_penalty,
+        "logical_instance_conflict_penalty": conflict_penalty,
+    }
 
 
 class SemanticGraphCalibrator:
@@ -581,14 +718,36 @@ class AdaptiveCandidateRankerPipeline:
                     )
 
         if target_candidates and not flags["retrieval"]:
+            normalized_candidates = [normalize_path(str(candidate or "").strip()) for candidate in target_candidates if str(candidate or "").strip()]
+            normalized_candidates = list(dict.fromkeys(candidate for candidate in normalized_candidates if candidate))
+            single_candidate = len(normalized_candidates) == 1
             for source_path in source_paths:
-                for candidate in target_candidates:
+                source_node = source_index[source_path]
+                src_parent = source_parent.get(source_node.id, "")
+                for candidate in normalized_candidates:
                     hints = _semantic_hint_from_path(candidate)
+                    target_node = target_index.get(candidate)
+                    if target_node is None:
+                        target_node = CanonicalNode(
+                            id=candidate,
+                            type="Candidate",
+                            label=hints["label"] or _guess_label_from_path(candidate),
+                            attributes={"datatype": hints["datatype"], "unit": hints["unit"]},
+                        )
+                    logical_score, logical_breakdown = _logical_candidate_score(
+                        source_node=source_node,
+                        target_node=target_node,
+                        source_path=source_path,
+                        target_path=candidate,
+                        source_parent=src_parent,
+                        target_parent=target_parent.get(target_node.id, ""),
+                        single_candidate=single_candidate,
+                    )
                     item = EvidenceItem(
                         id=f"candidate:{source_path}:{candidate}",
                         kind="target_candidate",
                         text=hints["label"] or candidate,
-                        score=0.35,
+                        score=logical_score,
                         payload={
                             "source_node": source_path,
                             "candidate_path": candidate,
@@ -596,11 +755,17 @@ class AdaptiveCandidateRankerPipeline:
                             "label": hints["label"] or candidate.rsplit("/", 2)[-2],
                             "datatype": hints["datatype"],
                             "unit": hints["unit"],
-                            "score_breakdown": {"fallback_injected": 1.0, "explicit_candidate": 1.0},
+                            "score_breakdown": {
+                                **logical_breakdown,
+                                "explicit_candidate": 1.0,
+                                "candidate_scored_by_logical_ranker": 1.0,
+                            },
                         },
                     )
                     retrieval_by_source[source_path].append(item)
                     evidence.append(item)
+            for source_node in retrieval_by_source:
+                retrieval_by_source[source_node] = sorted(retrieval_by_source[source_node], key=lambda x: float(x.score), reverse=True)
 
         rules_by_source: dict[str, list[Mapping]] = {p: [] for p in source_paths}
         if flags["rules"]:
@@ -693,13 +858,22 @@ class AdaptiveCandidateRankerPipeline:
                 unit_compat = 1.0 if src_unit and _guess_unit(target_node) and src_unit == _guess_unit(target_node) else (0.5 if not src_unit or not _guess_unit(target_node) else 0.0)
                 parent_sim = _lexical_similarity(src_parent, target_parent.get(target_node.id, "")) if src_parent or target_parent.get(target_node.id, "") else 0.5
                 rule_hit = 1.0 if "rules" in state.support else 0.0
-                target_tokens = _path_tokens(target_path) | _path_tokens(str((target_node.attributes or {}).get("parent_path", "")))
+                target_parent_path = target_parent.get(target_node.id, "")
+                target_tokens = _path_tokens(target_path) | _path_tokens(str((target_node.attributes or {}).get("parent_path", ""))) | _path_tokens(target_parent_path)
                 context_overlap = len(src_tokens & target_tokens)
                 context_score = min(1.0, context_overlap / 3.0) if target_tokens else 0.0
                 duplicate_count = signature_counts.get(_semantic_signature(target_node), 1)
                 duplicate_penalty = max(0.0, min(0.2, (duplicate_count - 1) * 0.05))
                 if context_score > 0.0:
                     duplicate_penalty *= 0.5
+                signal_family = _same_signal_family(source_node, target_node)
+                instance_alignment = max(
+                    _instance_alignment(source_node, target_node, source_path, target_path, src_parent, target_parent_path),
+                    float(retrieval_breakdown.get("instance_match", 0.5)),
+                )
+                instance_conflict_penalty = 0.16 if _has_conflicting_instance_ids(source_node, target_node, source_path, target_path, src_parent, target_parent_path) else 0.0
+                measurement_bonus = 1.0 if _is_measurement_like_node(source_node) and _is_measurement_like_node(target_node) else 0.0
+                single_candidate = 1.0 if len(candidates_by_source[source_path]) == 1 else 0.0
 
                 breakdown = {
                     "lexical_similarity": lexical,
@@ -709,6 +883,11 @@ class AdaptiveCandidateRankerPipeline:
                     "unit_compatibility": unit_compat,
                     "parent_context_similarity": parent_sim,
                     "path_context_similarity": context_score,
+                    "signal_family": signal_family,
+                    "instance_alignment": instance_alignment,
+                    "instance_conflict_penalty": instance_conflict_penalty,
+                    "measurement_node_bonus": measurement_bonus,
+                    "single_candidate_bonus": single_candidate,
                     "duplicate_semantic_count": float(duplicate_count),
                     "duplicate_ambiguity_penalty": duplicate_penalty,
                     "retrieval_score": retrieval_score,
@@ -735,16 +914,21 @@ class AdaptiveCandidateRankerPipeline:
                     breakdown.update(semantic_breakdown)
                 else:
                     total_score = (
-                        lexical * 0.22
-                        + embedding_similarity * 0.08
-                        + rule_hit * 0.2
-                        + datatype_compat * 0.14
-                        + unit_compat * 0.12
-                        + parent_sim * 0.1
-                        + context_score * 0.08
-                        + retrieval_score * 0.14
+                        lexical * 0.16
+                        + embedding_similarity * 0.05
+                        + rule_hit * 0.18
+                        + datatype_compat * 0.13
+                        + unit_compat * 0.11
+                        + parent_sim * 0.06
+                        + context_score * 0.06
+                        + retrieval_score * 0.16
+                        + signal_family * 0.11
+                        + instance_alignment * 0.18
+                        + measurement_bonus * 0.06
+                        + single_candidate * 0.06
                     )
                     total_score -= duplicate_penalty
+                    total_score -= instance_conflict_penalty
                     if len(state.support) > 1:
                         total_score += 0.08
                 state.score_breakdown = breakdown
@@ -881,12 +1065,10 @@ class AdaptiveCandidateRankerPipeline:
                     continue
                 retrieval_score = float(state.score_breakdown.get("retrieval_score", 0.0))
                 retrieval_only = "retrieval" in state.support and "rules" not in state.support and "llm" not in state.support
-                explicit_candidate = bool(state.score_breakdown.get("explicit_candidate", 0.0)) or bool(state.score_breakdown.get("fallback_injected", 0.0))
-                min_retrieval_threshold = EXPLICIT_CANDIDATE_CONFIDENCE_THRESHOLD if explicit_candidate else RETRIEVAL_CONFIDENCE_THRESHOLD
-                if retrieval_only and retrieval_score < min_retrieval_threshold:
+                if retrieval_only and retrieval_score < RETRIEVAL_CONFIDENCE_THRESHOLD:
                     if not (resolved_mode == "semantic_graph_calibrated" and state.total_score >= float(flags["calibrated_accept_threshold"])):
                         state.rejected_reasons.append(
-                            f"retrieval_score_below_min_threshold:{retrieval_score:.3f}<{min_retrieval_threshold:.3f}"
+                            f"retrieval_score_below_min_threshold:{retrieval_score:.3f}<{RETRIEVAL_CONFIDENCE_THRESHOLD:.3f}"
                         )
                         continue
                 if strict_target_existence and mapping.target_path not in target_index and mapping.target_path not in allowed_external_targets:
@@ -954,12 +1136,6 @@ class AdaptiveCandidateRankerPipeline:
             if state.mapping.target_path in used_targets:
                 continue
             selected_confidence = max(float(state.mapping.confidence), state.total_score)
-            if (
-                "retrieval" in state.support
-                and (bool(state.score_breakdown.get("explicit_candidate", 0.0)) or bool(state.score_breakdown.get("fallback_injected", 0.0)))
-                and selected_confidence < ACCEPTED_MAPPING_CONFIDENCE_FLOOR
-            ):
-                selected_confidence = ACCEPTED_MAPPING_CONFIDENCE_FLOOR
             winner = normalize_mapping_item(
                 {
                     **state.mapping.model_dump(),
@@ -998,13 +1174,12 @@ class AdaptiveCandidateRankerPipeline:
                 retrieval_fallback = next((state for state in valid_states_by_source.get(source_path, []) if "retrieval" in state.support), None)
                 if retrieval_fallback is not None:
                     retrieval_score = float(retrieval_fallback.score_breakdown.get("retrieval_score", 0.0))
-                    min_retrieval_threshold = EXPLICIT_CANDIDATE_CONFIDENCE_THRESHOLD if bool(retrieval_fallback.score_breakdown.get("explicit_candidate", 0.0)) or bool(retrieval_fallback.score_breakdown.get("fallback_injected", 0.0)) else RETRIEVAL_CONFIDENCE_THRESHOLD
-                    if retrieval_score >= min_retrieval_threshold:
+                    if retrieval_score >= RETRIEVAL_CONFIDENCE_THRESHOLD:
                         winner = normalize_mapping_item(
                             {
                                 **retrieval_fallback.mapping.model_dump(),
                                 "source_path": source_path,
-                                "confidence": max(ACCEPTED_MAPPING_CONFIDENCE_FLOOR, float(retrieval_fallback.mapping.confidence), retrieval_fallback.total_score),
+                                "confidence": max(float(retrieval_fallback.mapping.confidence), retrieval_fallback.total_score),
                                 "rationale": "Fallback to retrieval candidate after LLM no_match with sufficient retrieval confidence.",
                                 "evidence": [*retrieval_fallback.mapping.evidence, "ranker:llm_no_match_retrieval_fallback"],
                             },

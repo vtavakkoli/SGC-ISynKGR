@@ -23,10 +23,10 @@ def _norm(text: str) -> str:
     return str(text or "").strip().lower().replace("_", " ")
 
 
-def _instance_ids(*values: str) -> set[str]:
+def _semantic_instance_ids(*values: str) -> set[str]:
     ids: set[str] = set()
     pattern = re.compile(
-        r"(?i)\b(?:asset|aas|sm|submodel|machine|equipment|pump|motor|line|device|pressure|temperature|temp|flow|speed|vibration|state|status|class|signal)[-_ ]?(\d+)\b"
+        r"(?i)\b(?:pump|motor|line|pressure|temperature|temp|flow|speed|vibration|state|status|class|signal|channel)[-_ ]?(\d+)\b"
     )
     for value in values:
         text = str(value or "")
@@ -38,11 +38,38 @@ def _instance_ids(*values: str) -> set[str]:
     return ids
 
 
+def _context_instance_ids(*values: str) -> set[str]:
+    ids: set[str] = set()
+    pattern = re.compile(r"(?i)\b(?:asset|aas|sm|submodel|machine|equipment|device)[-_ ]?(\d+)\b")
+    for value in values:
+        for match in pattern.finditer(str(value or "")):
+            ids.add(str(int(match.group(1))))
+    return ids
+
+
+def _instance_ids(*values: str) -> set[str]:
+    return _semantic_instance_ids(*values) | _context_instance_ids(*values)
+
+
 def _instance_match(source_node: CanonicalNode, candidate: "TargetCandidate") -> float:
-    src_ids = _instance_ids(source_node.id, source_node.label or "")
-    tgt_ids = _instance_ids(candidate.target_path, candidate.label, candidate.parent)
-    if src_ids and tgt_ids:
-        return 1.0 if src_ids & tgt_ids else 0.0
+    src_text = _node_text(source_node)
+    tgt_text = _candidate_text(candidate) if "_candidate_text" in globals() else " ".join([candidate.target_path, candidate.label, candidate.parent])
+    src_semantic_ids = _semantic_instance_ids(source_node.id, source_node.label or "", src_text)
+    tgt_semantic_ids = _semantic_instance_ids(candidate.target_path, candidate.label, candidate.parent, tgt_text)
+    if src_semantic_ids and tgt_semantic_ids:
+        return 1.0 if src_semantic_ids & tgt_semantic_ids else 0.0
+
+    src_context_ids = _context_instance_ids(source_node.id, source_node.label or "", src_text)
+    tgt_context_ids = _context_instance_ids(candidate.target_path, candidate.label, candidate.parent, tgt_text)
+    src_signal = _split_semantic_tokens(src_text) & _SIGNAL_TERMS if "_split_semantic_tokens" in globals() else set()
+    tgt_signal = _split_semantic_tokens(tgt_text) & _SIGNAL_TERMS if "_split_semantic_tokens" in globals() else set()
+
+    if src_context_ids and tgt_semantic_ids and src_signal and tgt_signal and src_signal == tgt_signal:
+        return 1.0 if src_context_ids & tgt_semantic_ids else 0.0
+    if src_semantic_ids and tgt_context_ids and src_signal and tgt_signal and src_signal == tgt_signal:
+        return 1.0 if src_semantic_ids & tgt_context_ids else 0.0
+    if src_context_ids and tgt_context_ids and src_signal and tgt_signal and src_signal == tgt_signal:
+        return 1.0 if src_context_ids & tgt_context_ids else 0.0
     return 0.5
 
 
@@ -53,6 +80,104 @@ def _generic_label_penalty(label: str) -> float:
     if lowered.startswith("value "):
         return 0.15
     return 0.0
+
+
+_SEMANTIC_ALIASES: dict[str, str] = {
+    "temp": "temperature",
+    "temperature": "temperature",
+    "press": "pressure",
+    "pressure": "pressure",
+    "flowrate": "flow",
+    "flow": "flow",
+    "rpm": "speed",
+    "speed": "speed",
+    "velocity": "speed",
+    "vib": "vibration",
+    "vibration": "vibration",
+    "status": "state",
+    "state": "state",
+    "bool": "boolean",
+    "boolean": "boolean",
+    "float": "number",
+    "double": "number",
+    "int": "number",
+    "integer": "number",
+    "string": "text",
+}
+
+_STOP_TOKENS = {
+    "value", "values", "measurement", "measurements", "default", "submodel", "element",
+    "elements", "asset", "device", "resource", "fb", "node", "ns", "s", "i", "id",
+    "teds", "channel", "candidate",
+}
+
+_SIGNAL_TERMS = {"temperature", "pressure", "flow", "speed", "state", "vibration"}
+
+
+def _split_semantic_tokens(*values: str) -> set[str]:
+    tokens: set[str] = set()
+    for value in values:
+        for raw in re.findall(r"[A-Za-z]+|[0-9]+", str(value or "").replace("_", " ").replace("-", " ")):
+            token = raw.lower().strip()
+            if not token or token in _STOP_TOKENS or token.isdigit():
+                continue
+            tokens.add(_SEMANTIC_ALIASES.get(token, token))
+    return tokens
+
+
+def _node_text(node: CanonicalNode) -> str:
+    attrs = node.attributes or {}
+    metadata = attrs.get("metadata", {}) if isinstance(attrs.get("metadata", {}), dict) else {}
+    fields = [node.id, node.type, node.label or ""]
+    for key in ("description", "datatype", "dtype", "valueType", "unit", "asset_id", "equipment_id", "process_line", "parent_path", "context_tokens"):
+        value = attrs.get(key) or metadata.get(key)
+        if value:
+            fields.append(str(value))
+    return " ".join(fields)
+
+
+def _candidate_text(candidate: TargetCandidate) -> str:
+    return " ".join([candidate.target_path, candidate.label, candidate.datatype, candidate.unit, candidate.parent])
+
+
+def _same_signal_family(source_node: CanonicalNode, candidate: TargetCandidate) -> float:
+    src_signal = _split_semantic_tokens(_node_text(source_node)) & _SIGNAL_TERMS
+    tgt_signal = _split_semantic_tokens(_candidate_text(candidate)) & _SIGNAL_TERMS
+    if not src_signal or not tgt_signal:
+        return 0.5
+    return 1.0 if src_signal == tgt_signal else 0.0
+
+
+def _is_measurement_like_source(node: CanonicalNode) -> bool:
+    node_type = str(node.type or "").strip().lower()
+    text = _node_text(node).lower()
+    if node_type in {"channel", "signal", "property", "sensor", "variable", "uavariable", "output", "input"}:
+        return True
+    if _guess_datatype(node) or _guess_unit(node):
+        return True
+    return any(term in text for term in {"measurement", "measure", "value", "temp", "temperature", "pressure", "flow", "speed", "current", "voltage", "vibration", "state", "status", "setpoint"})
+
+
+def _is_measurement_like_candidate(candidate: TargetCandidate) -> bool:
+    text = _candidate_text(candidate).lower()
+    if candidate.datatype or candidate.unit:
+        return True
+    return any(term in text for term in {"measurement", "measure", "value", "temp", "temperature", "pressure", "flow", "speed", "current", "voltage", "vibration", "state", "status", "setpoint", "channel", "signal"})
+
+
+def _is_structural_without_measurement_source(node: CanonicalNode) -> bool:
+    if _is_measurement_like_source(node):
+        return False
+    text = _node_text(node).lower()
+    node_type = str(node.type or "").strip().lower()
+    return node_type in {"asset", "submodel", "resource", "functionblock", "device", "object", "teds"} or any(term in text for term in {"asset", "submodel", "resource", "functionblock", "device", "equipment", "machine"})
+
+
+def _is_structural_without_measurement_candidate(candidate: TargetCandidate) -> bool:
+    if _is_measurement_like_candidate(candidate):
+        return False
+    text = _candidate_text(candidate).lower()
+    return any(term in text for term in {"asset", "submodel", "resource", "functionblock", "device", "equipment", "machine", "teds"})
 
 
 def _guess_datatype(node: CanonicalNode) -> str:
@@ -135,17 +260,27 @@ class GraphRAGRetriever:
                 context_hint = 1.0 if candidate.parent and _norm(candidate.parent).split("/")[-1] in src_label else 0.0
                 penalty = _generic_label_penalty(candidate.label)
                 instance_match = _instance_match(src_node, candidate)
+                signal_family = _same_signal_family(src_node, candidate)
+                measurement_bonus = 1.0 if _is_measurement_like_source(src_node) and _is_measurement_like_candidate(candidate) else 0.0
+                single_candidate_bonus = 1.0 if len(pool) == 1 else 0.0
+                structural_penalty = 0.22 if _is_structural_without_measurement_source(src_node) or _is_structural_without_measurement_candidate(candidate) else 0.0
+                instance_conflict_penalty = 0.18 if instance_match == 0.0 else 0.0
                 score = min(
                     1.0,
                     max(
                         0.0,
-                        (lexical * 0.45)
-                        + (dtype_match * 0.18)
-                        + (unit_match * 0.12)
-                        + (context_hint * 0.08)
-                        + (instance_match * 0.17)
+                        (lexical * 0.26)
+                        + (dtype_match * 0.16)
+                        + (unit_match * 0.10)
+                        + (context_hint * 0.05)
+                        + (instance_match * 0.20)
+                        + (signal_family * 0.13)
+                        + (measurement_bonus * 0.08)
+                        + (single_candidate_bonus * 0.12)
                         + vector_boost
-                        - penalty,
+                        - penalty
+                        - structural_penalty
+                        - instance_conflict_penalty,
                     ),
                 )
                 breakdown = {
@@ -156,6 +291,11 @@ class GraphRAGRetriever:
                     "unit_match": unit_match,
                     "context_hint": context_hint,
                     "instance_match": instance_match,
+                    "signal_family": signal_family,
+                    "measurement_bonus": measurement_bonus,
+                    "single_candidate_bonus": single_candidate_bonus,
+                    "structural_penalty": structural_penalty,
+                    "instance_conflict_penalty": instance_conflict_penalty,
                     "vector_boost": vector_boost,
                     "generic_label_penalty": penalty,
                 }

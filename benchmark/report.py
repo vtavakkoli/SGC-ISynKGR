@@ -361,7 +361,7 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
             "runs": r["runs"],
             "f1_mean ± SD": _fmt_pm(r["f1_mean"], r["f1_std"]),
             "validity_mean ± SD": _fmt_pm(r["validity_mean"], r["validity_std"]),
-            "winner": "✓" if abs(float(r["f1_mean"]) - best_f1_by_pair.get(str(r["pair"]), -1.0)) < 1e-12 else "",
+            "winner": "✓" if best_f1_by_pair.get(str(r["pair"]), -1.0) > 0.0 and abs(float(r["f1_mean"]) - best_f1_by_pair.get(str(r["pair"]), -1.0)) < 1e-12 else "",
         }
         for r in aggregated_rows
     ]
@@ -477,7 +477,7 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
                     "validity_mean": row["validity_mean"],
                     "validity_std": row["validity_std"],
                     "validity_mean_pm_std": _fmt_pm(row["validity_mean"], row["validity_std"]),
-                    "winner": abs(float(row["f1_mean"]) - best_f1_by_pair.get(str(row["pair"]), -1.0)) < 1e-12,
+                    "winner": best_f1_by_pair.get(str(row["pair"]), -1.0) > 0.0 and abs(float(row["f1_mean"]) - best_f1_by_pair.get(str(row["pair"]), -1.0)) < 1e-12,
                 }
             )
 
@@ -538,7 +538,7 @@ def write_report(run_dir: Path, rows: list[dict]) -> None:
                     "runs": r["runs"],
                     "f1_mean ± SD": _fmt_pm(r["f1_mean"], r["f1_std"]),
                     "validity_mean ± SD": _fmt_pm(r["validity_mean"], r["validity_std"]),
-                    "winner": "✓" if abs(float(r["f1_mean"]) - best_f1_by_pair.get(str(r["pair"]), -1.0)) < 1e-12 else "",
+                    "winner": "✓" if best_f1_by_pair.get(str(r["pair"]), -1.0) > 0.0 and abs(float(r["f1_mean"]) - best_f1_by_pair.get(str(r["pair"]), -1.0)) < 1e-12 else "",
                 }
                 for r in aggregated_rows
             ],

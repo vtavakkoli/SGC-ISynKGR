@@ -53,6 +53,8 @@ class TranslatorConfig:
 
 ADAPTERS = {"opcua": OPCUAAdapter(), "aas": AASAdapter(), "iec61499": IEC61499Adapter(), "ieee1451": IEEE1451Adapter(), "iso15926": ISO15926Adapter()}
 RETRIEVAL_CONFIDENCE_THRESHOLD = 0.5
+EXPLICIT_CANDIDATE_CONFIDENCE_THRESHOLD = 0.35
+ACCEPTED_MAPPING_CONFIDENCE_FLOOR = 0.5
 _NUMERIC_DTYPES = {"FLOAT", "DOUBLE", "DECIMAL", "INT", "INTEGER", "NUMBER", "XS:DOUBLE", "XS:FLOAT", "XS:DECIMAL", "XS:INT"}
 
 
@@ -276,10 +278,30 @@ def _path_tokens(path: str) -> set[str]:
 
 
 def _is_equipment_label_without_measurement(node: CanonicalNode) -> bool:
-    label = str(node.label or node.id or "").lower()
-    equipment_terms = {"pump", "motor", "line", "device", "equipment", "machine"}
-    measurement_terms = {"temp", "temperature", "pressure", "flow", "speed", "current", "voltage", "vibration", "state", "status"}
-    has_equipment = any(term in label for term in equipment_terms)
+    label = " ".join(
+        [
+            str(node.label or ""),
+            str(node.id or ""),
+            str(node.type or ""),
+        ]
+    ).lower()
+    structural_types = {"asset", "submodel", "resource", "functionblock", "device", "object", "teds"}
+    equipment_terms = {
+        "pump",
+        "motor",
+        "line",
+        "device",
+        "equipment",
+        "machine",
+        "asset",
+        "submodel",
+        "resource",
+        "functionblock",
+        "fb",
+        "teds",
+    }
+    measurement_terms = {"temp", "temperature", "pressure", "flow", "speed", "current", "voltage", "vibration", "state", "status", "setpoint"}
+    has_equipment = any(term in label for term in equipment_terms) or str(node.type or "").strip().lower() in structural_types
     has_measurement = any(term in label for term in measurement_terms)
     return has_equipment and not has_measurement
 
@@ -515,11 +537,12 @@ class AdaptiveCandidateRankerPipeline:
         source_model = src.parse(source_raw)
         source_paths = [_canonical_source_path(source_standard, node.id) for node in source_model.nodes]
         source_index = {path: node for path, node in zip(source_paths, source_model.nodes)}
+        explicit_target_candidates = {normalize_path(str(candidate or "").strip()) for candidate in (target_candidates or []) if str(candidate or "").strip()}
         target_model = _build_target_model_from_candidates(target_standard, target_candidates or [])
         target_index = {node.id: node for node in target_model.nodes}
         source_parent = _parent_map(source_model)
         target_parent = _parent_map(target_model)
-        allowed_external_targets = set(target_candidates or [])
+        allowed_external_targets = set(explicit_target_candidates)
         strict_target_existence = resolved_mode in {"adaptive_candidate_ranker", "rule_only", "hybrid"}
 
         evidence: list[EvidenceItem] = []
@@ -573,7 +596,7 @@ class AdaptiveCandidateRankerPipeline:
                             "label": hints["label"] or candidate.rsplit("/", 2)[-2],
                             "datatype": hints["datatype"],
                             "unit": hints["unit"],
-                            "score_breakdown": {"fallback_injected": 1.0},
+                            "score_breakdown": {"fallback_injected": 1.0, "explicit_candidate": 1.0},
                         },
                     )
                     retrieval_by_source[source_path].append(item)
@@ -689,6 +712,8 @@ class AdaptiveCandidateRankerPipeline:
                     "duplicate_semantic_count": float(duplicate_count),
                     "duplicate_ambiguity_penalty": duplicate_penalty,
                     "retrieval_score": retrieval_score,
+                    "explicit_candidate": 1.0 if target_path in explicit_target_candidates else 0.0,
+                    "fallback_injected": float(retrieval_breakdown.get("fallback_injected", 0.0)),
                 }
                 if semantic_calibrator is not None:
                     total_score, semantic_breakdown = semantic_calibrator.score(
@@ -856,10 +881,12 @@ class AdaptiveCandidateRankerPipeline:
                     continue
                 retrieval_score = float(state.score_breakdown.get("retrieval_score", 0.0))
                 retrieval_only = "retrieval" in state.support and "rules" not in state.support and "llm" not in state.support
-                if retrieval_only and retrieval_score < RETRIEVAL_CONFIDENCE_THRESHOLD:
+                explicit_candidate = bool(state.score_breakdown.get("explicit_candidate", 0.0)) or bool(state.score_breakdown.get("fallback_injected", 0.0))
+                min_retrieval_threshold = EXPLICIT_CANDIDATE_CONFIDENCE_THRESHOLD if explicit_candidate else RETRIEVAL_CONFIDENCE_THRESHOLD
+                if retrieval_only and retrieval_score < min_retrieval_threshold:
                     if not (resolved_mode == "semantic_graph_calibrated" and state.total_score >= float(flags["calibrated_accept_threshold"])):
                         state.rejected_reasons.append(
-                            f"retrieval_score_below_min_threshold:{retrieval_score:.3f}<{RETRIEVAL_CONFIDENCE_THRESHOLD:.3f}"
+                            f"retrieval_score_below_min_threshold:{retrieval_score:.3f}<{min_retrieval_threshold:.3f}"
                         )
                         continue
                 if strict_target_existence and mapping.target_path not in target_index and mapping.target_path not in allowed_external_targets:
@@ -926,11 +953,18 @@ class AdaptiveCandidateRankerPipeline:
                 continue
             if state.mapping.target_path in used_targets:
                 continue
+            selected_confidence = max(float(state.mapping.confidence), state.total_score)
+            if (
+                "retrieval" in state.support
+                and (bool(state.score_breakdown.get("explicit_candidate", 0.0)) or bool(state.score_breakdown.get("fallback_injected", 0.0)))
+                and selected_confidence < ACCEPTED_MAPPING_CONFIDENCE_FLOOR
+            ):
+                selected_confidence = ACCEPTED_MAPPING_CONFIDENCE_FLOOR
             winner = normalize_mapping_item(
                 {
                     **state.mapping.model_dump(),
                     "source_path": source_path,
-                    "confidence": max(float(state.mapping.confidence), state.total_score),
+                    "confidence": selected_confidence,
                     "rationale": (f"Semantic graph calibrated ranker selected highest valid candidate with support={sorted(state.support)}." if resolved_mode == "semantic_graph_calibrated" else f"Adaptive candidate ranker selected highest valid candidate with support={sorted(state.support)}."),
                     "evidence": [*state.mapping.evidence, ("semantic_graph_calibrated:final_selection" if resolved_mode == "semantic_graph_calibrated" else "ranker:final_selection")],
                 },
@@ -964,12 +998,13 @@ class AdaptiveCandidateRankerPipeline:
                 retrieval_fallback = next((state for state in valid_states_by_source.get(source_path, []) if "retrieval" in state.support), None)
                 if retrieval_fallback is not None:
                     retrieval_score = float(retrieval_fallback.score_breakdown.get("retrieval_score", 0.0))
-                    if retrieval_score >= RETRIEVAL_CONFIDENCE_THRESHOLD:
+                    min_retrieval_threshold = EXPLICIT_CANDIDATE_CONFIDENCE_THRESHOLD if bool(retrieval_fallback.score_breakdown.get("explicit_candidate", 0.0)) or bool(retrieval_fallback.score_breakdown.get("fallback_injected", 0.0)) else RETRIEVAL_CONFIDENCE_THRESHOLD
+                    if retrieval_score >= min_retrieval_threshold:
                         winner = normalize_mapping_item(
                             {
                                 **retrieval_fallback.mapping.model_dump(),
                                 "source_path": source_path,
-                                "confidence": max(float(retrieval_fallback.mapping.confidence), retrieval_fallback.total_score),
+                                "confidence": max(ACCEPTED_MAPPING_CONFIDENCE_FLOOR, float(retrieval_fallback.mapping.confidence), retrieval_fallback.total_score),
                                 "rationale": "Fallback to retrieval candidate after LLM no_match with sufficient retrieval confidence.",
                                 "evidence": [*retrieval_fallback.mapping.evidence, "ranker:llm_no_match_retrieval_fallback"],
                             },

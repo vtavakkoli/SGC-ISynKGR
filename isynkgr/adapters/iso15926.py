@@ -4,11 +4,22 @@ import json
 from typing import Any
 
 from isynkgr.canonical.model import CanonicalEdge, CanonicalModel, CanonicalNode
+from isynkgr.icr.entities import normalize_path
 from isynkgr.canonical.schemas import ValidationReport, ValidationViolation
 
 
 class ISO15926Adapter:
     name = "iso15926"
+
+    def _path(self, identifier: str) -> str:
+        raw = str(identifier or "").strip().strip("/")
+        if not raw:
+            return ""
+        if raw.startswith("iso15926://"):
+            return normalize_path(raw)
+        if raw.lower().startswith("class/"):
+            return normalize_path(f"iso15926://{raw}")
+        return normalize_path(f"iso15926://class/{raw}")
 
     def _load(self, raw: str | bytes | dict[str, Any]) -> dict[str, Any]:
         if isinstance(raw, dict):
@@ -24,12 +35,12 @@ class ISO15926Adapter:
             cid = str(cls.get("id", "")).strip()
             if not cid:
                 continue
-            model.nodes.append(CanonicalNode(id=f"iso15926://{cid}", type="ClassOfIndividual", label=cls.get("label"), attributes=cls))
+            model.nodes.append(CanonicalNode(id=self._path(cid), type="ClassOfIndividual", label=cls.get("label"), attributes=cls))
         for rel in doc.get("relations", []):
             src = str(rel.get("source", "")).strip()
             dst = str(rel.get("target", "")).strip()
             if src and dst:
-                model.edges.append(CanonicalEdge(source=f"iso15926://{src}", target=f"iso15926://{dst}", relation=str(rel.get("type", "relatedTo"))))
+                model.edges.append(CanonicalEdge(source=self._path(src), target=self._path(dst), relation=str(rel.get("type", "relatedTo"))))
         return model
 
     def serialize(self, model: CanonicalModel, mappings: list[dict[str, Any]] | None = None) -> dict[str, Any]:

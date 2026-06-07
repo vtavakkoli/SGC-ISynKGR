@@ -197,7 +197,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate benchmark/data_gen synthetic cross-standard artifacts and GT.")
     parser.add_argument("--out-dir", default=os.getenv("BENCHMARK_DATA_GEN_OUT", "benchmark/data_gen/out"))
     parser.add_argument("--seed", type=int, default=int(os.getenv("BENCHMARK_DATA_GEN_SEED", "42")))
-    parser.add_argument("--sample-size", type=int, default=int(os.getenv("BENCHMARK_DATA_GEN_SAMPLE_SIZE", "100")))
+    parser.add_argument("--sample-size", type=int, default=int(os.getenv("BENCHMARK_DATA_GEN_SAMPLE_SIZE", "1200")))
     args = parser.parse_args()
 
     summary = generate_pipeline(Path(args.out_dir), seed=args.seed, sample_size=args.sample_size)

@@ -8,7 +8,7 @@ SIGNALS = ("pressure", "temperature", "flow", "speed", "vibration", "current", "
 
 
 def _count() -> int:
-    return int(os.getenv("DATASET_SYNTHETIC_COUNT", "300"))
+    return int(os.getenv("DATASET_SYNTHETIC_COUNT", "1200"))
 
 
 def main() -> None:

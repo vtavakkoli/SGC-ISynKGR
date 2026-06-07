@@ -190,7 +190,7 @@ def main() -> int:
     parser.add_argument("--ollama-host", default=os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"))
     parser.add_argument("--model-name", default=os.getenv("MODEL_NAME", "gemma4:e2b"))
     parser.add_argument("--seed", type=int, default=int(os.getenv("SEED", "42")))
-    parser.add_argument("--max-items", type=int, default=int(os.getenv("MAX_ITEMS", "100")))
+    parser.add_argument("--max-items", type=int, default=int(os.getenv("MAX_ITEMS", "1200")))
     parser.add_argument("--tier", default=os.getenv("TIER", "canonical"))
     args = parser.parse_args()
     return run_scenario(args)

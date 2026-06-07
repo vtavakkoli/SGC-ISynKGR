@@ -35,7 +35,7 @@
       "AAS"
     ]
   ],
-  "items_per_standard": 300,
+  "items_per_standard": 1200,
   "tiers": [
     "synthetic",
     "noisy",

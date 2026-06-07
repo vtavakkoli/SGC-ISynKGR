@@ -196,7 +196,7 @@ def main() -> None:
         print("[DEPRECATION] SUT_MODE=hybrid is deprecated; use adaptive_candidate_ranker.", flush=True)
     source_protocol = os.getenv("SOURCE_PROTOCOL", "opcua")
     target_protocol = os.getenv("TARGET_PROTOCOL", "aas")
-    max_samples = int(os.getenv("MAX_ITEMS", os.getenv("MAX_SAMPLES", "100")))
+    max_samples = int(os.getenv("MAX_ITEMS", os.getenv("MAX_SAMPLES", "1200")))
     model_name = os.getenv("MODEL_NAME", "gemma4:e2b")
     seed = int(os.getenv("SEED", "42"))
     tier = os.getenv("TIER", "canonical")

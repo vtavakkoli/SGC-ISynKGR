@@ -8,11 +8,11 @@ from pathlib import Path
 
 @dataclass
 class DatasetRequirements:
-    opcua_synthetic: int = int(os.getenv("DATASET_SYNTHETIC_COUNT", "300"))
-    aas_synthetic: int = int(os.getenv("DATASET_SYNTHETIC_COUNT", "300"))
-    crosswalk_rows: int = int(os.getenv("DATASET_SYNTHETIC_COUNT", "300"))
-    opcua_semi_real: int = int(os.getenv("DATASET_SEMI_REAL_COUNT", "30"))
-    aas_semi_real: int = int(os.getenv("DATASET_SEMI_REAL_COUNT", "30"))
+    opcua_synthetic: int = int(os.getenv("DATASET_SYNTHETIC_COUNT", "1200"))
+    aas_synthetic: int = int(os.getenv("DATASET_SYNTHETIC_COUNT", "1200"))
+    crosswalk_rows: int = int(os.getenv("DATASET_SYNTHETIC_COUNT", "1200"))
+    opcua_semi_real: int = int(os.getenv("DATASET_SEMI_REAL_COUNT", "120"))
+    aas_semi_real: int = int(os.getenv("DATASET_SEMI_REAL_COUNT", "120"))
 
 
 def _count_files(path: Path, suffix: str) -> int:

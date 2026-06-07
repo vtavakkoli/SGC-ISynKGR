@@ -20,6 +20,10 @@ from isynkgr.icr.mapping_schema import ingest_mapping_payload
 SCENARIO_MODE = {name: runtime.mode for name, runtime in SCENARIO_RUNTIME.items()}
 
 
+def _dataset_root() -> Path:
+    return Path(os.getenv("DATASET_ROOT", "datasets/v1"))
+
+
 def normalize_ollama_host(raw_host: str) -> str:
     value = (raw_host or "").strip() or "http://host.docker.internal:11434"
     if "://" not in value:
@@ -111,7 +115,8 @@ def run_scenario(args: argparse.Namespace) -> int:
     dataset_items = int(args.max_items)
     dataset_path = out_dir / "dataset.jsonl"
     gt_path = out_dir / "ground_truth.jsonl"
-    gt_source = Path("datasets/v1/crosswalk/gt_mappings.jsonl")
+    dataset_root = _dataset_root()
+    gt_source = dataset_root / "crosswalk" / "gt_mappings.jsonl"
     gt_rows = [ingest_mapping_payload(json.loads(line), migrate_legacy=True).model_dump() for line in gt_source.read_text().splitlines() if line.strip()][:dataset_items]
     gt_path.write_text("\n".join(json.dumps(r) for r in gt_rows) + "\n")
     dataset_rows = [
@@ -122,7 +127,7 @@ def run_scenario(args: argparse.Namespace) -> int:
             "source_standard": "OPCUA",
             "target_standard": "AAS",
             "tier": args.tier,
-            "source_path": str(Path("datasets/v1/opcua/synthetic") / f"opcua_{idx:03d}.xml"),
+            "source_path": str(dataset_root / "opcua" / "synthetic" / f"opcua_{idx:03d}.xml"),
             "cardinality_contract": _cardinality_contract_for_sample(row),
         }
         for idx, row in enumerate(gt_rows)
@@ -190,7 +195,7 @@ def main() -> int:
     parser.add_argument("--ollama-host", default=os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"))
     parser.add_argument("--model-name", default=os.getenv("MODEL_NAME", "gemma4:e2b"))
     parser.add_argument("--seed", type=int, default=int(os.getenv("SEED", "42")))
-    parser.add_argument("--max-items", type=int, default=int(os.getenv("MAX_ITEMS", "1200")))
+    parser.add_argument("--max-items", type=int, default=int(os.getenv("MAX_ITEMS", "100")))
     parser.add_argument("--tier", default=os.getenv("TIER", "canonical"))
     args = parser.parse_args()
     return run_scenario(args)

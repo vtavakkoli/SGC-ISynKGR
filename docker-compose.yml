@@ -35,7 +35,11 @@ services:
       OLLAMA_READY_TIMEOUT_S: ${OLLAMA_READY_TIMEOUT_S:-180}
       MODEL_NAME: ${MODEL_NAME:-gemma4:e2b}
       SEED: ${SEED:-42}
-      MAX_ITEMS: ${MAX_ITEMS:-2}
+      DATASET_ROOT: ${DATASET_ROOT:-/app/results/generated_datasets/v1}
+      DATASET_SYNTHETIC_COUNT: ${DATASET_SYNTHETIC_COUNT:-1200}
+      DATASET_SEMI_REAL_COUNT: ${DATASET_SEMI_REAL_COUNT:-120}
+      RUNS_PER_PAIR: ${RUNS_PER_PAIR:-20}
+      MAX_ITEMS: ${MAX_ITEMS:-1200}
       TIER: ${TIER:-canonical}
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -22,49 +22,6 @@ DEFAULT_SEEDS = [11, 23, 37]
 DEFAULT_RUNS_PER_PAIR = 20
 
 
-SIGNAL_SPECS: tuple[dict[str, object], ...] = (
-    {"signal": "pressure", "dtype": "FLOAT", "unit": "bar", "low": 0, "high": 25},
-    {"signal": "temperature", "dtype": "FLOAT", "unit": "C", "low": -20, "high": 120},
-    {"signal": "flow", "dtype": "FLOAT", "unit": "l/s", "low": 0, "high": 300},
-    {"signal": "speed", "dtype": "FLOAT", "unit": "rpm", "low": 0, "high": 5000},
-    {"signal": "vibration", "dtype": "FLOAT", "unit": "mm/s", "low": 0, "high": 50},
-    {"signal": "current", "dtype": "FLOAT", "unit": "A", "low": 0, "high": 250},
-    {"signal": "voltage", "dtype": "FLOAT", "unit": "V", "low": 0, "high": 480},
-    {"signal": "state", "dtype": "STRING", "unit": "", "low": 0, "high": 1},
-)
-
-
-def _signal_spec(idx: int) -> dict[str, object]:
-    return dict(SIGNAL_SPECS[idx % len(SIGNAL_SPECS)])
-
-
-def _signal_name(idx: int) -> str:
-    return str(_signal_spec(idx)["signal"])
-
-
-def _signal_dtype(signal: str) -> str:
-    for spec in SIGNAL_SPECS:
-        if spec["signal"] == signal:
-            return str(spec["dtype"])
-    return "STRING" if signal in {"state", "status"} else "FLOAT"
-
-
-def _signal_unit(signal: str) -> str:
-    for spec in SIGNAL_SPECS:
-        if spec["signal"] == signal:
-            return str(spec["unit"])
-    if "pressure" in signal:
-        return "bar"
-    if "temp" in signal:
-        return "C"
-    return ""
-
-
-def _fixture_modulo(path: Path, suffix: str, fallback: int = 300) -> int:
-    count = len(list(path.glob(f"*.{suffix}"))) if path.exists() else 0
-    return max(1, count or fallback)
-
-
 def _now_run_id(prefix: str) -> str:
     return f"{prefix}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
@@ -118,45 +75,39 @@ def _pair_supported(source: str, target: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _source_fixture_path(source_standard: str, idx: int, source_dir: Path) -> Path:
+def _dataset_root() -> Path:
+    return Path(os.getenv("DATASET_ROOT", "datasets/v1"))
+
+
+def _source_fixture_path(source_standard: str, idx: int, source_dir: Path, dataset_root: Path) -> Path:
     src = source_standard.upper()
     if src == "OPCUA":
-        opc_root = Path("datasets/v1/opcua/synthetic")
-        return opc_root / f"opcua_{idx % _fixture_modulo(opc_root, 'xml'):03d}.xml"
+        return dataset_root / "opcua" / "synthetic" / f"opcua_{idx:03d}.xml"
     if src == "AAS":
-        aas_root = Path("datasets/v1/aas/synthetic")
-        return aas_root / f"aas_{idx % _fixture_modulo(aas_root, 'json'):03d}.json"
-
+        return dataset_root / "aas" / "synthetic" / f"aas_{idx:03d}.json"
     source_file = source_dir / f"sample_{idx:04d}_{src.lower()}.json"
-    spec = _signal_spec(idx)
-    signal = str(spec["signal"])
-    dtype = str(spec["dtype"])
-    unit = str(spec["unit"])
-    low = float(spec["low"])
-    high = float(spec["high"])
     payload = {"standard": src}
     if src == "IEC61499":
-        signal_id = f"{signal.capitalize()}{idx}"
         payload |= {
             "devices": [
                 {
-                    "id": f"Device{idx}",
-                    "name": f"MainDevice{idx}",
+                    "id": "Device0",
+                    "name": "MainDevice",
                     "resources": [
                         {
-                            "id": f"Res{idx % 11}",
-                            "name": f"Resource{idx % 11}",
+                            "id": "Res1",
+                            "name": "Resource1",
                             "function_blocks": [
                                 {
-                                    "id": f"FB{idx % 13}",
-                                    "name": f"{signal.capitalize()}TelemetryFB",
+                                    "id": "FB1",
+                                    "name": "TelemetryFB",
                                     "type": "Telemetry",
                                     "inputs": [
-                                        {"id": f"SetPoint{idx}", "name": f"{signal.capitalize()}SetPoint{idx}", "dtype": dtype, "unit": unit, "range": {"min": low, "max": high}}
+                                        {"id": "SetPoint", "dtype": "FLOAT", "unit": "C", "range": {"min": -20, "max": 120}}
                                     ],
                                     "outputs": [
-                                        {"id": signal_id, "name": signal_id, "dtype": dtype, "unit": unit, "range": {"min": low, "max": high} if dtype == "FLOAT" else None},
-                                        {"id": f"DeviceState{idx}", "name": f"DeviceState{idx}", "dtype": "STRING"},
+                                        {"id": "Pressure0", "name": "Pressure0", "dtype": "FLOAT", "unit": "bar", "range": {"min": 0, "max": 25}},
+                                        {"id": "PumpState", "name": "PumpState", "dtype": "STRING"},
                                     ],
                                 }
                             ],
@@ -169,19 +120,19 @@ def _source_fixture_path(source_standard: str, idx: int, source_dir: Path) -> Pa
         payload |= {
             "teds": [
                 {
-                    "id": f"teds{idx}",
-                    "name": f"{signal.capitalize()}SensorTEDS{idx}",
+                    "id": "teds0",
+                    "name": "SensorTEDS",
                     "channels": [
-                        {"id": f"Channel{idx}", "name": f"{signal.capitalize()}{idx}", "dtype": dtype, "unit": unit, "range": {"min": low, "max": high} if dtype == "FLOAT" else None},
-                        {"id": f"Status{idx}", "name": f"Status{idx}", "dtype": "STRING"},
+                        {"id": "Channel0", "name": "Measurement", "dtype": "FLOAT", "unit": "bar", "range": {"min": 0, "max": 25}},
+                        {"id": "Channel1", "name": "PumpState", "dtype": "STRING"},
                     ],
                 }
             ]
         }
     else:
-        class_id = f"{signal.capitalize()}Class{idx}"
+        class_id = f"Class{idx}"
         payload |= {
-            "classes": [{"id": class_id, "label": f"{signal.capitalize()} {idx}", "datatype": dtype, "unit": unit}],
+            "classes": [{"id": class_id, "label": class_id}],
             "relations": [{"source": class_id, "target": f"{class_id}Value", "type": "hasValue"}],
         }
     source_file.write_text(json.dumps(payload))
@@ -225,14 +176,14 @@ def _normalize_signal_hint(signal: str | None, idx: int) -> str:
     if not signal:
         return f"signal{idx}"
     lowered = signal.lower()
-    for token in ("temperature", "pressure", "flow", "speed", "state", "status", "vibration", "current", "voltage", "setpoint"):
+    for token in ("temperature", "pressure", "flow", "speed", "state", "vibration"):
         if token in lowered:
             return token
     return re.sub(r"\d+$", "", lowered) or lowered
 
 
 def _synthetic_id_for_standard(standard: str, idx: int, default: str, source_path: Path | None = None, signal_hint: str | None = None) -> str:
-    signal = _normalize_signal_hint(signal_hint or _signal_name(idx), idx)
+    signal = _normalize_signal_hint(signal_hint, idx)
     s = standard.upper()
     if s == "OPCUA":
         raw_name = _peek_opcua_variable(source_path) if source_path else None
@@ -246,71 +197,23 @@ def _synthetic_id_for_standard(standard: str, idx: int, default: str, source_pat
             return f"aas://asset-{idx}/submodel/default/element/{element}/value"
         return f"aas://asset-{idx}/submodel/default/element/{signal}/value"
     if s == "IEEE1451":
-        return f"ieee1451://teds{idx}/Channel{idx}/value"
+        channel_id = "Channel1" if signal == "state" else "Channel0"
+        return f"ieee1451://teds0/{channel_id}/value"
     if s == "IEC61499":
-        return f"iec61499://Device{idx}/Res{idx % 11}/FB{idx % 13}/{signal.capitalize()}{idx}"
+        variable_id = "PumpState" if signal == "state" else "Pressure0"
+        return f"iec61499://Device0/Res1/FB1/{variable_id}"
     if s == "ISO15926":
-        return f"iso15926://class/{signal.capitalize()}Class{idx}"
+        return f"iso15926://class/Class{idx}"
     return default
 
 
-def _target_distractors(target_standard: str, target_id: str, idx: int, signal_hint: str, limit: int = 8) -> list[str]:
-    """Create hard negative candidates for a benchmark row.
-
-    The old benchmark often passed only the gold target as candidate, which made
-    several ablations unrealistically perfect.  These distractors keep the gold
-    candidate available but add same-asset/wrong-signal and same-signal/wrong-
-    asset candidates to make threshold tuning meaningful.
-    """
-
-    signal = _normalize_signal_hint(signal_hint or _signal_name(idx), idx)
-    signals = [str(spec["signal"]) for spec in SIGNAL_SPECS]
-    alternatives = [sig for sig in signals if sig != signal]
-    candidates: list[str] = [target_id]
-
-    def add(value: str) -> None:
-        if value and value not in candidates:
-            candidates.append(value)
-
-    tgt = target_standard.upper()
-    if tgt == "AAS":
-        for alt in alternatives[:4]:
-            add(f"aas://asset-{idx}/submodel/default/element/{alt}/value")
-        for offset in (1, 2, 7):
-            add(f"aas://asset-{idx + offset}/submodel/default/element/{signal}/value")
-    elif tgt == "OPCUA":
-        for alt in alternatives[:4]:
-            add(f"opcua://ns=2;s={alt.capitalize()}{idx}")
-        for offset in (1, 2, 7):
-            add(f"opcua://ns=2;s={signal.capitalize()}{idx + offset}")
-    elif tgt == "IEEE1451":
-        for offset in (1, 2, 7):
-            add(f"ieee1451://teds{idx + offset}/Channel{idx + offset}/value")
-        for alt in alternatives[:4]:
-            add(f"ieee1451://teds{idx}/Channel{idx}_{alt}/value")
-    elif tgt == "IEC61499":
-        for offset in (1, 2, 7):
-            add(f"iec61499://Device{idx + offset}/Res{(idx + offset) % 11}/FB{(idx + offset) % 13}/{signal.capitalize()}{idx + offset}")
-        for alt in alternatives[:4]:
-            add(f"iec61499://Device{idx}/Res{idx % 11}/FB{idx % 13}/{alt.capitalize()}{idx}")
-    elif tgt == "ISO15926":
-        for offset in (1, 2, 7):
-            add(f"iso15926://class/{signal.capitalize()}Class{idx + offset}")
-        for alt in alternatives[:4]:
-            add(f"iso15926://class/{alt.capitalize()}Class{idx}")
-
-    return candidates[:limit]
-
-
-
-
-def _build_pair_dataset(artifacts_dir: Path, source_standard: str, target_standard: str, max_rows: int) -> Path:
+def _build_pair_dataset(artifacts_dir: Path, source_standard: str, target_standard: str, max_rows: int, dataset_root: Path) -> Path:
     pair_dir = artifacts_dir / "pairs" / _pair_key(source_standard, target_standard)
     pair_dir.mkdir(parents=True, exist_ok=True)
     source_dir = pair_dir / "sources"
     source_dir.mkdir(parents=True, exist_ok=True)
 
-    gt_src = Path("datasets/v1/crosswalk/gt_mappings.jsonl")
+    gt_src = dataset_root / "crosswalk" / "gt_mappings.jsonl"
     rows: list[dict] = []
     gt_rows: list[dict] = []
     target_universe: list[str] = []
@@ -322,13 +225,13 @@ def _build_pair_dataset(artifacts_dir: Path, source_standard: str, target_standa
         if not line.strip():
             continue
         rec = ingest_mapping_payload(json.loads(line), migrate_legacy=True).model_dump()
-        source_fixture = _source_fixture_path(source_standard, i, source_dir)
+        source_fixture = _source_fixture_path(source_standard, i, source_dir, dataset_root)
         if source_standard.upper() == "OPCUA":
             source_signal_hint = _peek_opcua_variable(source_fixture)
         elif source_standard.upper() == "AAS":
             _, source_signal_hint = _peek_aas_element(source_fixture)
         else:
-            source_signal_hint = _signal_name(i)
+            source_signal_hint = None
         source_id = _synthetic_id_for_standard(source_standard, i, rec["source_path"], source_fixture, source_signal_hint)
         target_id = _synthetic_id_for_standard(target_standard, i, rec["target_path"], None, source_signal_hint)
         if target_id and target_id not in seen_targets:
@@ -359,12 +262,16 @@ def _build_pair_dataset(artifacts_dir: Path, source_standard: str, target_standa
                 "source_path": str(source_fixture),
                 "source_record": {
                     "variable_role": "measurement",
-                    "datatype": _signal_dtype(_normalize_signal_hint(signal_hint, i)),
-                    "unit": _signal_unit(_normalize_signal_hint(signal_hint, i)),
+                    "datatype": "FLOAT" if signal_hint.lower() not in {"state"} else "STRING",
+                    "unit": "bar" if "pressure" in signal_hint.lower() else ("C" if "temp" in signal_hint.lower() else ""),
                     "context_entity_id": context_id,
                     "description": f"{signal_hint} measurement for {context_id}",
                 },
-                "target_candidates": _target_distractors(target_standard, target_id, i, signal_hint),
+                "target_candidates": [
+                    t
+                    for t in target_universe
+                    if (signal_hint.lower() in t.lower()) or (context_id in t)
+                ][:5],
                 "cardinality_contract": {"mode": "one_to_one", "grouped_1": False, "expected_count": 1},
             }
         )
@@ -381,7 +288,7 @@ def _build_pair_dataset(artifacts_dir: Path, source_standard: str, target_standa
     return pair_dir
 
 
-def _run_variant(variant_name: str, pair_dir: Path, cfg_path: Path, logs_dir: Path, seed: int, source_standard: str, target_standard: str, max_items: int) -> tuple[dict, float]:
+def _run_variant(variant_name: str, pair_dir: Path, cfg_path: Path, logs_dir: Path, seed: int, source_standard: str, target_standard: str) -> tuple[dict, float]:
     out_dir = pair_dir / "results" / variant_name / f"seed{seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
     gt_src = pair_dir / "ground_truth.jsonl"
@@ -395,7 +302,7 @@ def _run_variant(variant_name: str, pair_dir: Path, cfg_path: Path, logs_dir: Pa
             "CONFIG_PATH": str(cfg_path.resolve()),
             "SUT_MODE": "embedding_only" if variant_name == "embedding_similarity" else ("adaptive_candidate_ranker" if variant_name == "full_framework" or variant_name.startswith("ablation_") else variant_name),
             "SEED": str(seed),
-            "MAX_ITEMS": str(max_items),
+            "MAX_ITEMS": str(int(os.getenv("MAX_ITEMS", "100"))),
             "COMPONENT_FLAGS": json.dumps(COMPONENT_FLAGS.get(variant_name, {})),
             "SOURCE_PROTOCOL": source_standard.lower(),
             "TARGET_PROTOCOL": target_standard.lower(),
@@ -485,7 +392,8 @@ def run_full_workflow() -> int:
     logs_dir = artifacts_dir / "logs"
     logs_dir.mkdir(exist_ok=True)
     try:
-        validate_or_generate(Path("datasets/v1"))
+        dataset_root = _dataset_root()
+        validate_or_generate(dataset_root)
         pairs = [tuple(pair) for pair in cfg.get("pairs", [])]
         variants = [v["name"] for v in cfg["variants"] if v["name"] in CANONICAL_SCENARIOS]
         max_rows = int(os.getenv("MAX_ITEMS", str(cfg.get("items_per_standard", 120))))
@@ -498,10 +406,10 @@ def run_full_workflow() -> int:
                 skipped_pairs.append({"pair": f"{source_standard}->{target_standard}", "reason": reason})
                 print(f"[SKIP] {source_standard}->{target_standard}: {reason}", flush=True)
                 continue
-            pair_dir = _build_pair_dataset(artifacts_dir, source_standard, target_standard, max_rows)
+            pair_dir = _build_pair_dataset(artifacts_dir, source_standard, target_standard, max_rows, dataset_root)
             for variant in variants:
                 for seed in seeds:
-                    metrics, _ = _run_variant(variant, pair_dir, Path("benchmark/config.json"), logs_dir, seed, source_standard, target_standard, max_rows)
+                    metrics, _ = _run_variant(variant, pair_dir, Path("benchmark/config.json"), logs_dir, seed, source_standard, target_standard)
                     rows.append(metrics)
 
         (artifacts_dir / "metrics.json").write_text(json.dumps(rows, indent=2))

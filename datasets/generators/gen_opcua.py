@@ -15,6 +15,10 @@ SIGNALS = (
 )
 
 
+def _dataset_root() -> Path:
+    return Path(os.getenv("DATASET_ROOT", "datasets/v1"))
+
+
 def _count() -> int:
     return int(os.getenv("DATASET_SYNTHETIC_COUNT", "1200"))
 
@@ -43,10 +47,10 @@ def make_nodeset(i: int) -> str:
 
 
 def main() -> None:
-    root = Path("datasets/v1/opcua/synthetic")
+    root = _dataset_root() / "opcua" / "synthetic"
     root.mkdir(parents=True, exist_ok=True)
     for i in range(_count()):
-        (root / f"opcua_{i:03d}.xml").write_text(make_nodeset(i))
+        (root / f"opcua_{i:03d}.xml").write_text(make_nodeset(i), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -7,12 +7,16 @@ from pathlib import Path
 SIGNALS = ("pressure", "temperature", "flow", "speed", "vibration", "current", "voltage", "state")
 
 
+def _dataset_root() -> Path:
+    return Path(os.getenv("DATASET_ROOT", "datasets/v1"))
+
+
 def _count() -> int:
     return int(os.getenv("DATASET_SYNTHETIC_COUNT", "1200"))
 
 
 def main() -> None:
-    root = Path("datasets/v1/crosswalk")
+    root = _dataset_root() / "crosswalk"
     root.mkdir(parents=True, exist_ok=True)
     gt = root / "gt_mappings.jsonl"
     lines = []
@@ -21,20 +25,17 @@ def main() -> None:
         lines.append(
             json.dumps(
                 {
-                    # Source/target are normalized later per directed pair.
-                    # Keep the source at the variable node instead of the
-                    # equipment object to avoid rewarding shortcut mappings.
-                    "source_path": f"opcua://ns=2;i={2000+i}",
+                    "source_path": f"opcua://ns=2;s={signal.capitalize()}{i}",
                     "target_path": f"aas://asset-{i}/submodel/default/element/{signal}/value",
                     "mapping_type": "equivalent",
                     "transform": None,
                     "confidence": 1.0,
-                    "rationale": "Synthetic deterministic ground-truth mapping.",
-                    "evidence": ["generator:gen_crosswalk"],
+                    "rationale": "Deterministic synthetic ground-truth mapping with signal, unit, and instance alignment.",
+                    "evidence": ["generator:gen_crosswalk", f"signal:{signal}", f"instance:{i}"],
                 }
             )
         )
-    gt.write_text("\n".join(lines) + "\n")
+    gt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

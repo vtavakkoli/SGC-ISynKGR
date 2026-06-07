@@ -16,6 +16,10 @@ SIGNALS = (
 )
 
 
+def _dataset_root() -> Path:
+    return Path(os.getenv("DATASET_ROOT", "datasets/v1"))
+
+
 def _count() -> int:
     return int(os.getenv("DATASET_SYNTHETIC_COUNT", "1200"))
 
@@ -26,27 +30,31 @@ def _signal(i: int) -> tuple[str, str, str]:
 
 def make_aas(i: int) -> dict:
     signal, value_type, unit = _signal(i)
-    value = "RUNNING" if value_type == "string" else str(10 + i)
-    element = {
+    value = "ON" if signal == "state" else str(10 + (i % 90))
+    elem = {
         "idShort": signal,
         "modelType": "Property",
         "valueType": value_type,
         "value": value,
-        "description": [{"language": "en", "text": f"{signal} measurement for asset-{i}"}],
+        "description": f"{signal} measurement for asset-{i}",
     }
     if unit:
-        element["unit"] = unit
+        elem["unit"] = unit
     return {
-        "assetAdministrationShells": [{"id": f"aas-{i}", "idShort": f"PumpAAS{i}", "submodels": [{"keys": [{"value": f"sm-{i}"}]}]}],
-        "submodels": [{"id": f"sm-{i}", "idShort": f"{signal.capitalize()}Telemetry{i}", "submodelElements": [element]}],
+        "assetAdministrationShells": [
+            {"id": f"aas-{i}", "idShort": f"AssetShell{i}", "submodels": [{"keys": [{"value": f"sm-{i}"}]}]}
+        ],
+        "submodels": [
+            {"id": f"sm-{i}", "idShort": f"Telemetry{i}", "submodelElements": [elem]}
+        ],
     }
 
 
 def main() -> None:
-    root = Path("datasets/v1/aas/synthetic")
+    root = _dataset_root() / "aas" / "synthetic"
     root.mkdir(parents=True, exist_ok=True)
     for i in range(_count()):
-        (root / f"aas_{i:03d}.json").write_text(json.dumps(make_aas(i), indent=2))
+        (root / f"aas_{i:03d}.json").write_text(json.dumps(make_aas(i), indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

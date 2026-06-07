@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import math
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,7 +53,26 @@ class TranslatorConfig:
 
 
 ADAPTERS = {"opcua": OPCUAAdapter(), "aas": AASAdapter(), "iec61499": IEC61499Adapter(), "ieee1451": IEEE1451Adapter(), "iso15926": ISO15926Adapter()}
-RETRIEVAL_CONFIDENCE_THRESHOLD = 0.5
+DEFAULT_RETRIEVAL_CONFIDENCE_THRESHOLD = 0.62
+
+
+def _float_setting(name: str, default: float) -> float:
+    """Read a numeric setting from the environment with safe fallback.
+
+    Benchmark thresholds must be easy to tune without editing code.  Invalid
+    values should not crash a long benchmark run; they fall back to the
+    version-controlled default.
+    """
+
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 _NUMERIC_DTYPES = {"FLOAT", "DOUBLE", "DECIMAL", "INT", "INTEGER", "NUMBER", "XS:DOUBLE", "XS:FLOAT", "XS:DECIMAL", "XS:INT"}
 
 
@@ -147,6 +167,15 @@ def _semantic_hint_from_path(path: str) -> dict[str, str]:
         datatype = "FLOAT"
     elif "speed" in raw_lower:
         unit = "rpm"
+        datatype = "FLOAT"
+    elif "vibration" in raw_lower:
+        unit = "mm/s"
+        datatype = "FLOAT"
+    elif "current" in raw_lower:
+        unit = "A"
+        datatype = "FLOAT"
+    elif "voltage" in raw_lower:
+        unit = "V"
         datatype = "FLOAT"
     elif "state" in raw_lower or "status" in raw_lower:
         datatype = "STRING"
@@ -652,11 +681,16 @@ class AdaptiveCandidateRankerPipeline:
             "retrieval": True,
             "llm": True,
             "allow_synthetic_benchmark_shortcuts": False,
-            "uncertainty_threshold": 0.72,
-            "ambiguity_margin": 0.06,
-            "max_candidates_per_source": 5,
-            "calibrated_accept_threshold": 0.55,
-            "calibrated_margin": 0.02,
+            # Conservative defaults after the first 90%+ tuning run.
+            # The previous 0.55/0.02 calibration made the benchmark too easy
+            # and allowed low-evidence matches to pass when the candidate list
+            # was small.  Keep these values configurable for threshold sweeps.
+            "uncertainty_threshold": _float_setting("SGC_UNCERTAINTY_THRESHOLD", 0.82),
+            "ambiguity_margin": _float_setting("SGC_AMBIGUITY_MARGIN", 0.08),
+            "max_candidates_per_source": int(_float_setting("SGC_MAX_CANDIDATES_PER_SOURCE", 8)),
+            "retrieval_confidence_threshold": _float_setting("SGC_RETRIEVAL_CONFIDENCE_THRESHOLD", DEFAULT_RETRIEVAL_CONFIDENCE_THRESHOLD),
+            "calibrated_accept_threshold": _float_setting("SGC_CALIBRATED_ACCEPT_THRESHOLD", 0.68),
+            "calibrated_margin": _float_setting("SGC_CALIBRATED_MARGIN", 0.05),
         }
         flags.update(config.component_flags or {})
 
@@ -1040,6 +1074,8 @@ class AdaptiveCandidateRankerPipeline:
         ranking_trace: dict[str, list[dict[str, Any]]] = {}
         valid_states_by_source: dict[str, list[CandidateState]] = {}
 
+        retrieval_confidence_threshold = float(flags["retrieval_confidence_threshold"])
+
         for source_path in source_paths:
             states = list(candidates_by_source[source_path].values())
             states.sort(key=lambda x: x.total_score, reverse=True)
@@ -1065,10 +1101,10 @@ class AdaptiveCandidateRankerPipeline:
                     continue
                 retrieval_score = float(state.score_breakdown.get("retrieval_score", 0.0))
                 retrieval_only = "retrieval" in state.support and "rules" not in state.support and "llm" not in state.support
-                if retrieval_only and retrieval_score < RETRIEVAL_CONFIDENCE_THRESHOLD:
+                if retrieval_only and retrieval_score < retrieval_confidence_threshold:
                     if not (resolved_mode == "semantic_graph_calibrated" and state.total_score >= float(flags["calibrated_accept_threshold"])):
                         state.rejected_reasons.append(
-                            f"retrieval_score_below_min_threshold:{retrieval_score:.3f}<{RETRIEVAL_CONFIDENCE_THRESHOLD:.3f}"
+                            f"retrieval_score_below_min_threshold:{retrieval_score:.3f}<{retrieval_confidence_threshold:.3f}"
                         )
                         continue
                 if strict_target_existence and mapping.target_path not in target_index and mapping.target_path not in allowed_external_targets:
@@ -1174,7 +1210,7 @@ class AdaptiveCandidateRankerPipeline:
                 retrieval_fallback = next((state for state in valid_states_by_source.get(source_path, []) if "retrieval" in state.support), None)
                 if retrieval_fallback is not None:
                     retrieval_score = float(retrieval_fallback.score_breakdown.get("retrieval_score", 0.0))
-                    if retrieval_score >= RETRIEVAL_CONFIDENCE_THRESHOLD:
+                    if retrieval_score >= retrieval_confidence_threshold:
                         winner = normalize_mapping_item(
                             {
                                 **retrieval_fallback.mapping.model_dump(),

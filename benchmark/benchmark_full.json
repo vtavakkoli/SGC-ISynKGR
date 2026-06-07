@@ -2,26 +2,72 @@
   "seed": 42,
   "runs_per_pair": 20,
   "run_id_prefix": "run",
-  "standards": ["OPCUA", "AAS", "IEEE1451", "IEC61499", "ISO15926"],
-  "pairs": [
-    ["OPCUA", "AAS"],
-    ["AAS", "OPCUA"],
-    ["IEEE1451", "IEC61499"],
-    ["IEC61499", "IEEE1451"],
-    ["OPCUA", "IEEE1451"],
-    ["ISO15926", "AAS"]
+  "standards": [
+    "OPCUA",
+    "AAS",
+    "IEEE1451",
+    "IEC61499",
+    "ISO15926"
   ],
-  "items_per_standard": 180,
-  "tiers": ["synthetic", "noisy", "realistic"],
+  "pairs": [
+    [
+      "OPCUA",
+      "AAS"
+    ],
+    [
+      "AAS",
+      "OPCUA"
+    ],
+    [
+      "IEEE1451",
+      "IEC61499"
+    ],
+    [
+      "IEC61499",
+      "IEEE1451"
+    ],
+    [
+      "OPCUA",
+      "IEEE1451"
+    ],
+    [
+      "ISO15926",
+      "AAS"
+    ]
+  ],
+  "items_per_standard": 300,
+  "tiers": [
+    "synthetic",
+    "noisy",
+    "realistic"
+  ],
   "variants": [
-    {"name": "full_framework"},
-    {"name": "rule_based_only"},
-    {"name": "llm_only"},
-    {"name": "rag_only"},
-    {"name": "embedding_similarity"},
-    {"name": "semantic_graph_calibrated"},
-    {"name": "ablation_no_rules"},
-    {"name": "ablation_no_retrieval"},
-    {"name": "ablation_no_llm"}
+    {
+      "name": "full_framework"
+    },
+    {
+      "name": "rule_based_only"
+    },
+    {
+      "name": "llm_only"
+    },
+    {
+      "name": "rag_only"
+    },
+    {
+      "name": "embedding_similarity"
+    },
+    {
+      "name": "semantic_graph_calibrated"
+    },
+    {
+      "name": "ablation_no_rules"
+    },
+    {
+      "name": "ablation_no_retrieval"
+    },
+    {
+      "name": "ablation_no_llm"
+    }
   ]
 }

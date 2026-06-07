@@ -45,7 +45,20 @@ class AASAdapter:
             m.nodes.append(CanonicalNode(id=sm_path, type="Submodel", label=sm.get("idShort"), attributes={"raw_id": sid}))
             for elem in sm.get("submodelElements", []):
                 eid = elem.get("idShort", "element")
-                sensor = Sensor(id=eid, path=build_sensor_path(self.name, sid or "default", eid), protocol=self.name, label=eid, metadata={"valueType": elem.get("valueType"), "value": elem.get("value"), "submodel_id": sid})
+                sensor = Sensor(
+                    id=eid,
+                    path=build_sensor_path(self.name, sid or "default", eid),
+                    protocol=self.name,
+                    label=eid,
+                    metadata={
+                        "valueType": elem.get("valueType"),
+                        "datatype": elem.get("valueType"),
+                        "unit": elem.get("unit"),
+                        "value": elem.get("value"),
+                        "description": elem.get("description"),
+                        "submodel_id": sid,
+                    },
+                )
                 m.nodes.append(CanonicalNode(id=sensor.path, type=elem.get("modelType", "Property"), label=sensor.label, attributes=sensor.model_dump()))
                 m.edges.append(CanonicalEdge(source=sm_path, target=sensor.path, relation="hasElement"))
         return m
